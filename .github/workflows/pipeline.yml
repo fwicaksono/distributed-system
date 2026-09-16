@@ -36,7 +36,7 @@ jobs:
     runs-on: ubuntu-24.04
     steps:
       - name: 1. Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
 
       - name: 2. Install dependencies
         uses: actions/setup-python@v5
@@ -91,7 +91,7 @@ jobs:
       RABBITMQ_PASSWORD: taskplatform
       RUN_INTEGRATION: "1"
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: actions/setup-python@v5
         with:
           python-version: ${{ env.PYTHON_VERSION }}
@@ -114,7 +114,7 @@ jobs:
     outputs:
       image_tag: ${{ steps.meta.outputs.tag }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: 6. Tag = short git SHA (immutable, traceable to a commit)
         id: meta
@@ -170,7 +170,7 @@ jobs:
       AWS_REGION: ${{ vars.AWS_REGION }}
       TAG: ${{ needs.build.outputs.image_tag }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: aws-actions/configure-aws-credentials@v4
         with:
           role-to-assume: ${{ vars.AWS_DEPLOY_ROLE_ARN }}
