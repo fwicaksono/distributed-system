@@ -1,0 +1,663 @@
+<section class="step" id="local-development" data-phase="Bangun di lokal" data-title="Development Lokal">
+<dl class="brief">
+  <div><dt>Tujuan</dt><dd>Menjalankan seluruh stack di laptop dan membuat satu task melewati semuanya.</dd></div>
+  <div><dt>Kenapa</dt><dd>Lihat sistemnya bekerja dulu sebelum mempelajari setiap bagian.</dd></div>
+  <div><dt>Prasyarat</dt><dd>Tool dari langkah 4 sudah terpasang.</dd></div>
+  <div><dt>Dampak ke arsitektur</dt><dd>Cermin lokal dari production: image yang sama, konfigurasi yang sama, Docker network menggantikan subnet.</dd></div>
+</dl>
+
+<h3>Langkah-langkah</h3>
+<x-code lang="bash" title="1. Ambil kode dan buat file environment">
+git clone https://github.com/<anda>/distributed-task-platform.git
+cd distributed-task-platform
+cp .env.example .env
+python3 -c "import secrets; print(secrets.token_urlsafe(48))"   # tempel ke JWT_SECRET_KEY
+$EDITOR .env                                                     # ganti setiap CHANGE_ME
+</x-code>
+<x-code lang="bash" title="2. Jalankan semuanya">
+make up        # = docker compose up -d --build
+make ps
+</x-code>
+<x-out>
+NAME                          SERVICE             STATUS
+taskplatform-api-1-1          api-1               Up 40 seconds (healthy)
+taskplatform-api-2-1          api-2               Up 40 seconds (healthy)
+taskplatform-api-3-1          api-3               Up 40 seconds (healthy)
+taskplatform-migrate-1        migrate             Exited (0) 45 seconds ago
+taskplatform-nginx-1          nginx               Up 35 seconds (healthy)
+taskplatform-postgres-1       postgres            Up 55 seconds (healthy)
+taskplatform-rabbitmq-1       rabbitmq            Up 55 seconds (healthy)
+taskplatform-redis-1          redis               Up 55 seconds (healthy)
+taskplatform-worker-1-1       worker-1            Up 40 seconds (healthy)
+taskplatform-worker-2-1       worker-2            Up 40 seconds (healthy)
+...
+</x-out>
+<p><code>migrate</code> dengan status <code>Exited (0)</code> itu benar: ia adalah one-off job yang menjalankan database migration lalu berhenti. Semua API menunggunya selesai (<code>service_completed_successfully</code>) sebelum start.</p>
+
+<x-code lang="bash" title="3. Alirkan satu task melewati sistem">
+BASE=http://localhost:8080/api/v1
+curl -s -X POST $BASE/auth/register -H 'Content-Type: application/json' \
+  -d '{"email":"me@example.com","password":"a-long-password"}' | jq
+TOKEN=$(curl -s -X POST $BASE/auth/token \
+  -d 'username=me@example.com&password=a-long-password' | jq -r .access_token)
+AUTH="Authorization: Bearer $TOKEN"
+
+ID=$(curl -s -X POST $BASE/tasks -H "$AUTH" -H 'Content-Type: application/json' \
+  -d '{"title":"Laporan bulanan","payload":{"kind":"sleep","duration_seconds":3}}' | jq -r .id)
+curl -si -X POST $BASE/tasks/$ID/process -H "$AUTH" | head -n 12
+watch -n1 "curl -s $BASE/tasks/$ID/status -H '$AUTH' | jq -c '{status,attempts,worker_id}'"
+</x-code>
+<x-out>
+HTTP/1.1 202 Accepted
+Location: http://localhost:8080/api/v1/tasks/7c0e.../status
+x-request-id: 5b3f0d1c9e7a4f0e8a4b2c6d1e9f7a3b
+x-ratelimit-remaining: 99996
+...
+{"status":"queued","attempts":0,"worker_id":null}
+{"status":"processing","attempts":1,"worker_id":null}
+{"status":"completed","attempts":1,"worker_id":"worker-2"}
+</x-out>
+
+<h3>Verifikasi</h3>
+<ul>
+<li><a href="http://localhost:8080/docs">localhost:8080/docs</a> — dokumentasi API interaktif.</li>
+<li><a href="http://localhost:15672">localhost:15672</a> — RabbitMQ: queue <code>tasks.process</code> punya 2 consumer.</li>
+<li><a href="http://localhost:9090/targets">localhost:9090/targets</a> — Prometheus: semua target <code>UP</code>.</li>
+<li><a href="http://localhost:3000">localhost:3000</a> — dashboard Grafana di folder “Task Platform”.</li>
+<li>Ikuti satu request lintas service: <code>docker compose logs | grep 5b3f0d1c9e7a4f0e</code> menampilkan access log Nginx, log API, dan log worker.</li>
+</ul>
+
+<details class="errors"><summary>Error yang sering muncul</summary><div class="inner">
+<div class="table-wrap"><table>
+<thead><tr><th>Gejala</th><th>Penyebab</th><th>Solusi</th></tr></thead>
+<tbody>
+<tr><td><code>jwt_secret_key: String should have at least 32 characters</code> di log API</td><td>JWT secret belum diganti</td><td>Generate (langkah 1) lalu <code>docker compose up -d</code></td></tr>
+<tr><td><code>Bind for 0.0.0.0:8080 failed: port is already allocated</code></td><td>Port 8080 dipakai aplikasi lain</td><td>Hentikan aplikasi itu, atau ubah <code>"8080:80"</code> menjadi <code>"8081:80"</code></td></tr>
+<tr><td><code>migrate</code> exit 1: <code>password authentication failed</code></td><td><code>POSTGRES_PASSWORD</code> diubah setelah volume dibuat</td><td>Password hanya di-set saat inisialisasi pertama: <code>make destroy &amp;&amp; make up</code></td></tr>
+<tr><td>Nginx 502 tepat setelah start</td><td>API masih starting</td><td>Tunggu status <code>(healthy)</code>; cek <code>make logs S=api-1</code></td></tr>
+<tr><td>Error cadvisor / node-exporter di macOS</td><td>Keduanya membaca VM Docker, beberapa mount berbeda</td><td>Tidak berbahaya; comment-out jika mengganggu</td></tr>
+</tbody></table></div>
+</div></details>
+</section>
+
+<section class="step" id="fastapi" data-phase="Bangun di lokal" data-title="FastAPI">
+<dl class="brief">
+  <div><dt>Tujuan</dt><dd>Paham struktur API dan alasan keberadaan setiap layer.</dd></div>
+  <div><dt>Kenapa</dt><dd>Backend yang modular memungkinkan kode yang sama berjalan sebagai tiga replika API dan dua worker tanpa duplikasi.</dd></div>
+  <div><dt>Prasyarat</dt><dd>Langkah 5 berjalan.</dd></div>
+  <div><dt>Dampak ke arsitektur</dt><dd>Proses API yang stateless: syarat utama horizontal scaling.</dd></div>
+</dl>
+
+<h3>Layer</h3>
+<x-code lang="text" title="app/">
+app/
+├── main.py            create_app(): middleware, router, lifespan (pool dibuka sekali)
+├── api/
+│   ├── deps.py        dependency injection: session, redis, current user, service, rate limit
+│   └── routes/        hanya HTTP: parse request -> panggil service -> bentuk response
+├── services/          use case: TaskService, AuthService, TaskCache, RateLimiter, publisher
+├── repositories/      hanya SQL
+├── models/            tabel SQLAlchemy
+├── schemas/           kontrak Pydantic (body HTTP DAN message queue)
+├── core/              config, logging, database, redis, rabbitmq, security, metrics, error
+├── middleware/        request ID, access log, HTTP metrics
+├── workers/           consumer.py (transport) + handlers.py (pekerjaannya)
+└── utils/             retry dengan exponential backoff
+</x-code>
+
+<div class="table-wrap"><table>
+<thead><tr><th>Layer</th><th>Tahu tentang</th><th>Tidak boleh tahu tentang</th><th>Berubah ketika</th></tr></thead>
+<tbody>
+<tr><td>routes</td><td>HTTP, status code, schema</td><td>SQL, key Redis, exchange</td><td>Kontrak API berubah</td></tr>
+<tr><td>services</td><td>Aturan bisnis, penyimpanan apa saja yang ada</td><td>HTTP</td><td>Perilaku berubah</td></tr>
+<tr><td>repositories</td><td>SQL, tabel</td><td>HTTP, cache, queue</td><td>Schema atau query berubah</td></tr>
+<tr><td>workers</td><td>Message, repository, cache</td><td>HTTP</td><td>Cara pemrosesan berubah</td></tr>
+</tbody></table></div>
+<p><strong>Kenapa modular?</strong> Karena worker memakai ulang <code>TaskRepository</code> dan <code>TaskCache</code> tanpa meng-import FastAPI; karena test bisa mengganti PostgreSQL dengan fake in-memory lewat dependency override; karena reviewer bisa tahu jenis perubahan sebuah PR hanya dari path file-nya. Harganya adalah indirection — untuk aplikasi 200 baris, satu file saja sudah cukup.</p>
+
+<h3>Dasar HTTP dan REST yang dipakai</h3>
+<div class="table-wrap"><table>
+<thead><tr><th>Status</th><th>Arti</th><th>Di mana</th></tr></thead>
+<tbody>
+<tr><td class="num">200</td><td>OK, body berisi resource</td><td>GET task, list, status</td></tr>
+<tr><td class="num">201</td><td>Created; header <code>Location</code> menunjuk resource baru</td><td>POST /tasks, register</td></tr>
+<tr><td class="num">202</td><td>Accepted untuk diproses — <em>belum</em> selesai</td><td>POST /process</td></tr>
+<tr><td class="num">204</td><td>Sukses, tanpa body</td><td>DELETE</td></tr>
+<tr><td class="num">400</td><td>Request rusak yang tidak tertangkap schema</td><td>Pagination cursor salah</td></tr>
+<tr><td class="num">401</td><td>Belum terautentikasi (dengan <code>WWW-Authenticate</code>)</td><td>Token hilang/invalid</td></tr>
+<tr><td class="num">404</td><td>Tidak ditemukan — juga dipakai untuk “bukan milik Anda”, agar ID tidak bisa ditebak-tebak</td><td>Task milik user lain</td></tr>
+<tr><td class="num">409</td><td>Konflik dengan state saat ini</td><td>Memproses task yang sudah queued</td></tr>
+<tr><td class="num">422</td><td>Validasi gagal</td><td>Title kosong, priority 99, field tak dikenal</td></tr>
+<tr><td class="num">429</td><td>Kena rate limit, dengan <code>Retry-After</code></td><td>Rate limiter</td></tr>
+<tr><td class="num">502/503/504</td><td>Upstream gagal / dependency tidak tersedia / upstream timeout</td><td>Nginx; broker mati</td></tr>
+</tbody></table></div>
+
+<h3>Request validation dan response model</h3>
+<x-file path="app/schemas/task.py" lang="python"></x-file>
+<p><code>extra="forbid"</code> menolak field yang tidak dikenal (salah ketik menjadi error, bukan data yang diam-diam diabaikan). <code>response_model=TaskRead</code> di route berarti kolom internal seperti <code>lease_expires_at</code> tidak akan pernah bocor, meskipun object ORM-nya memiliki kolom itu.</p>
+
+<h3>Dependency injection</h3>
+<x-file path="app/api/deps.py" lang="python"></x-file>
+<p>Route mendeklarasikan apa yang dibutuhkan; FastAPI membangunnya per request dan meng-cache setiap dependency dalam request itu (satu session dipakai bersama oleh lookup user dan service). Dependency session berbentuk generator: kode setelah <code>yield</code> melakukan commit atau rollback — pola <em>unit of work</em>.</p>
+
+<h3>Middleware, error, logging, konfigurasi</h3>
+<ul>
+<li><strong>Middleware</strong> (<code>app/middleware/request_context.py</code>) membungkus setiap request: memakai ulang <code>X-Request-ID</code> dari Nginx, mengukur durasi, mencatat metrics Prometheus dengan label <em>route template</em>, dan menulis satu baris access log JSON.</li>
+<li><strong>Error handling</strong> (<code>app/core/exceptions.py</code>): service melempar <code>NotFoundError</code>, <code>ConflictError</code>, dan seterusnya; satu handler memetakannya ke status code dan satu bentuk error yang menyertakan <code>request_id</code>. Exception yang tidak tertangani di-log beserta stack trace dan dikembalikan sebagai 500 generik.</li>
+<li><strong>Konfigurasi</strong> (<code>app/core/config.py</code>): setiap setting adalah environment variable yang divalidasi Pydantic saat startup. Secret yang hilang membuat container langsung crash — jauh lebih baik daripada gagal di request sungguhan pertama.</li>
+<li><strong>Connection pooling</strong> (<code>app/core/database.py</code>): satu pool per proses, dibuat di <code>lifespan</code>. <code>pool_size=5</code>, <code>max_overflow=5</code>, <code>pool_timeout=5s</code>, <code>pool_pre_ping=True</code>, dan <code>statement_timeout</code> di sisi server.</li>
+</ul>
+
+<x-note kind="warn" title="Jangan memblokir event loop">
+<p>FastAPI menjalankan endpoint <code>async def</code> di satu event loop per proses. Pemanggilan yang blocking di dalamnya — <code>time.sleep</code>, <code>requests.get</code>, hashing bcrypt — membekukan <em>semua</em> request di proses itu. Karena itulah <code>AuthService</code> melakukan hashing password dengan <code>asyncio.to_thread</code>.</p>
+</x-note>
+
+<h3>Verifikasi</h3>
+<x-code lang="bash">
+make install && source .venv/bin/activate
+make test
+curl -s -X POST localhost:8080/api/v1/tasks -H "$AUTH" -H 'Content-Type: application/json' \
+  -d '{"title":"","priority":99,"colour":"red"}' | jq
+</x-code>
+<x-out>
+33 passed, 1 skipped in 1.04s
+{
+  "error": {
+    "code": "validation_error",
+    "message": "Request validation failed",
+    "details": [
+      {"loc": ["body","title"], "msg": "String should have at least 1 character", ...},
+      {"loc": ["body","priority"], "msg": "Input should be less than or equal to 10", ...},
+      {"loc": ["body","colour"], "msg": "Extra inputs are not permitted", ...}
+    ],
+    "request_id": "..."
+  }
+}
+</x-out>
+
+<details class="errors"><summary>Error yang sering muncul</summary><div class="inner">
+<ul>
+<li><strong>Semua request jadi lambat ketika satu request lambat</strong>: ada yang blocking di dalam <code>async def</code>. Gunakan <code>py-spy dump --pid</code> di dalam container untuk melihat frame yang macet.</li>
+<li><strong><code>QueuePool limit of size 5 overflow 5 reached, connection timed out</code></strong>: pool habis — query lambat, atau koneksi ditahan sambil <code>await</code> ke service eksternal yang lambat.</li>
+<li><strong>IP client selalu IP Nginx</strong>: uvicorn butuh <code>--proxy-headers</code> dan <code>FORWARDED_ALLOW_IPS</code> yang sesuai.</li>
+</ul>
+</div></details>
+</section>
+
+<section class="step" id="postgresql" data-phase="Bangun di lokal" data-title="PostgreSQL">
+<dl class="brief">
+  <div><dt>Tujuan</dt><dd>Paham schema-nya, serta memakai transaction, index, dan <code>EXPLAIN ANALYZE</code> secara sadar.</dd></div>
+  <div><dt>Kenapa</dt><dd>Ini adalah source of truth. Semua penyimpanan lain bisa dibangun ulang darinya; ia tidak bisa dibangun ulang dari yang lain.</dd></div>
+  <div><dt>Prasyarat</dt><dd>Stack berjalan; <code>make psql</code> berhasil.</dd></div>
+  <div><dt>Dampak ke arsitektur</dt><dd>Inti yang stateful — dan komponen paling sulit untuk di-scale atau dibuat highly available.</dd></div>
+</dl>
+
+<h3>Schema</h3>
+<x-file path="migrations/versions/20260915_0001_initial_schema.py" lang="python"></x-file>
+
+<div class="table-wrap"><table>
+<thead><tr><th>Konsep</th><th>Di mana</th><th>Kenapa</th></tr></thead>
+<tbody>
+<tr><td>Primary key (UUID)</td><td>semua tabel</td><td>ID bisa dibuat di mana saja (replika API mana pun) tanpa koordinasi; tidak bisa ditebak</td></tr>
+<tr><td>Foreign key <code>ON DELETE CASCADE</code></td><td>tasks → users, results/logs → tasks</td><td>Tidak ada data yatim; menghapus task ikut menghapus hasilnya dalam transaction yang sama</td></tr>
+<tr><td>Unique constraint</td><td><code>users.email</code>, <code>task_results.task_id</code></td><td>Benar di bawah concurrency: dua API server mendaftarkan email yang sama — database, bukan Python, yang menentukan pemenangnya</td></tr>
+<tr><td>Check constraint</td><td><code>priority BETWEEN 0 AND 10</code></td><td>Aturan tetap berlaku untuk write yang tidak lewat API</td></tr>
+<tr><td>Composite index <code>(owner_id, created_at DESC, id DESC)</code></td><td>tasks</td><td>“Task saya, terbaru dulu” = satu index range scan</td></tr>
+<tr><td>Partial index <code>WHERE status IN ('queued','processing')</code></td><td>tasks</td><td>Index kecil yang hanya berisi task yang sedang aktif</td></tr>
+<tr><td>Enum type</td><td><code>task_status</code></td><td>State yang tidak valid mustahil tersimpan</td></tr>
+</tbody></table></div>
+
+<h3>Transaction dan isolation dalam praktik</h3>
+<p>Dua user menekan “process” bersamaan dan request-nya jatuh ke <code>api-1</code> dan <code>api-3</code>. Keduanya menjalankan:</p>
+<x-code lang="sql">
+UPDATE tasks SET status = 'queued', attempts = 0
+WHERE id = $1 AND owner_id = $2 AND status IN ('pending', 'failed')
+RETURNING *;
+</x-code>
+<p>Isolation default PostgreSQL adalah <strong>READ COMMITTED</strong>. UPDATE pertama mengunci row; UPDATE kedua menunggu, lalu mengevaluasi ulang <code>WHERE</code> terhadap row yang sudah di-commit, menemukan <code>status='queued'</code>, dan meng-update nol row → service mengembalikan <code>409</code>. Tanpa lock eksplisit, tanpa race condition — sebuah <em>compare-and-set</em> dalam satu statement. <code>claim()</code> di worker memakai teknik yang sama.</p>
+<x-note kind="info" title="Kapan menaikkan isolation level">
+<p><code>REPEATABLE READ</code> / <code>SERIALIZABLE</code> dibutuhkan ketika keputusan bergantung pada <em>beberapa</em> row yang dibaca sebelumnya dalam transaction (misalnya “hanya jika user punya kurang dari 10 task aktif”). Level ini bisa gagal dengan serialization error yang harus di-retry. Jika aturannya bisa diekspresikan, utamakan conditional write dalam satu statement.</p>
+</x-note>
+
+<h3>Connection pooling dan migration</h3>
+<p>Setiap koneksi PostgreSQL adalah proses server tersendiri (~5–10 MB). Anggarannya: 3 API × 10 + 2 worker × 10 + exporter ≈ 55, di bawah <code>max_connections=100</code>. Menambah API ke-4 tanpa menghitung ulang angka ini adalah awal dari banyak outage. Pada skala lebih besar, pasang <strong>PgBouncer</strong> dalam transaction mode di antara aplikasi dan database.</p>
+<p>Migration dijalankan sebagai one-off job terpisah (<code>docker compose run --rm migrate</code>) <em>sebelum</em> kode baru di-roll out — jangan pernah dari setiap API saat startup, karena tiga replika akan saling berebut. Tulis migration yang backward compatible (expand → deploy → contract): tambahkan kolom nullable, deploy kode yang memakainya, lakukan backfill, lalu terapkan <code>NOT NULL</code> di release berikutnya.</p>
+
+<h3>Query optimization dengan EXPLAIN ANALYZE</h3>
+<x-code lang="sql" title="make psql">
+-- Isi 200 ribu task untuk satu user
+INSERT INTO users (id, email, hashed_password) VALUES (gen_random_uuid(), 'bulk@example.com', 'x');
+INSERT INTO tasks (id, owner_id, title)
+SELECT gen_random_uuid(), (SELECT id FROM users WHERE email='bulk@example.com'), 'bulk ' || g
+FROM generate_series(1, 200000) g;
+ANALYZE tasks;
+
+EXPLAIN (ANALYZE, BUFFERS)
+SELECT * FROM tasks
+WHERE owner_id = (SELECT id FROM users WHERE email='bulk@example.com')
+ORDER BY created_at DESC, id DESC LIMIT 20;
+</x-code>
+<x-out>
+Limit  (cost=8.73..10.21 rows=20 width=...) (actual time=0.041..0.066 rows=20 loops=1)
+  ->  Index Scan using ix_tasks_owner_created on tasks  (actual time=0.040..0.061 rows=20 loops=1)
+        Index Cond: (owner_id = $0)
+        Buffers: shared hit=24
+Planning Time: 0.210 ms
+Execution Time: 0.092 ms
+</x-out>
+<x-code lang="sql" title="Sekarang hapus index-nya dan bandingkan">
+DROP INDEX ix_tasks_owner_created;
+EXPLAIN (ANALYZE, BUFFERS) SELECT ... ;   -- query yang sama
+-- Seq Scan + Sort (top-N heapsort) ... Execution Time: ~40 ms, Buffers: shared hit=~3000
+-- Pasang kembali:
+CREATE INDEX ix_tasks_owner_created ON tasks (owner_id, created_at DESC, id DESC);
+</x-code>
+<p>Bandingkan juga <code>OFFSET 100000 LIMIT 20</code> (membaca lalu membuang 100.000 row) dengan bentuk keyset yang dipakai API: <code>WHERE (created_at, id) &lt; ($c, $id)</code>. Setelah itu, cari query paling lambat dengan <code>pg_stat_statements</code> (sudah aktif di <code>config/postgres</code>).</p>
+
+<h3>PostgreSQL versus Redis</h3>
+<div class="table-wrap"><table>
+<thead><tr><th></th><th>PostgreSQL</th><th>Redis (seperti dipakai di sini)</th></tr></thead>
+<tbody>
+<tr><td>Peran</td><td>Source of truth</td><td>Akselerasi yang bisa dibuang + counter bersama</td></tr>
+<tr><td>Durability</td><td>WAL, fsync saat commit</td><td>Persistence sengaja dimatikan</td></tr>
+<tr><td>Query</td><td>Join, constraint, transaction</td><td>Lookup key, increment atomik</td></tr>
+<tr><td>Latency</td><td>~1 ms untuk read ber-index lewat jaringan</td><td>~0,2 ms</td></tr>
+<tr><td>Jika hilang</td><td>Bisnis ikut hilang</td><td>Lebih lambat sebentar</td></tr>
+</tbody></table></div>
+
+<details class="errors"><summary>Error yang sering muncul</summary><div class="inner">
+<ul>
+<li><code>FATAL: sorry, too many clients already</code> — hitungan pool melebihi <code>max_connections</code>.</li>
+<li><code>canceling statement due to statement timeout</code> — query melebihi 5 detik; cari index yang hilang.</li>
+<li><code>terminating connection due to idle-in-transaction timeout</code> — kode membuka transaction lalu menunggu sesuatu yang lambat.</li>
+<li>Migration menggantung — menunggu lock yang dipegang transaction panjang; <code>lock_timeout=10s</code> membuatnya gagal cepat.</li>
+</ul>
+</div></details>
+</section>
+
+<section class="step" id="redis" data-phase="Bangun di lokal" data-title="Redis">
+<dl class="brief">
+  <div><dt>Tujuan</dt><dd>Menerapkan cache-aside dengan TTL, invalidation, perlindungan cache stampede, dan rate limiter bersama.</dd></div>
+  <div><dt>Kenapa</dt><dd>Read mendominasi kebanyakan API; dan dengan 3 API server, counter apa pun harus tinggal di luar proses.</dd></div>
+  <div><dt>Prasyarat</dt><dd>Langkah 7.</dd></div>
+  <div><dt>Dampak ke arsitektur</dt><dd>Penyimpanan kedua yang bisa berbeda isi dengan yang pertama — dan komponen yang kegagalannya tidak boleh menjadi outage.</dd></div>
+</dl>
+
+<div class="diagram" role="img" aria-label="Alur cache-aside">
+<svg viewBox="0 0 900 250" xmlns="http://www.w3.org/2000/svg">
+  <defs><marker id="ah2" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0,0 L10,5 L0,10 z" class="arrow"/></marker></defs>
+  <rect x="20" y="95" width="120" height="56" rx="6" class="box"/><text x="80" y="128" text-anchor="middle" class="t-label" font-size="14">API</text>
+  <rect x="230" y="95" width="150" height="56" rx="6" class="box"/><text x="305" y="120" text-anchor="middle" class="t-label" font-size="14">Redis</text><text x="305" y="139" text-anchor="middle" font-size="11">GET task:v1:&lt;id&gt;</text>
+  <rect x="480" y="175" width="170" height="56" rx="6" class="box"/><text x="565" y="200" text-anchor="middle" class="t-label" font-size="14">PostgreSQL</text><text x="565" y="219" text-anchor="middle" font-size="11">SELECT by id</text>
+  <rect x="720" y="95" width="160" height="56" rx="6" class="box"/><text x="800" y="120" text-anchor="middle" class="t-label" font-size="14">Redis SET</text><text x="800" y="139" text-anchor="middle" font-size="11">EX 60 + jitter</text>
+  <path d="M140,123 L230,123" class="wire" marker-end="url(#ah2)"/>
+  <path d="M305,95 C305,40 80,40 80,92" class="wire-amber" marker-end="url(#ah2)"/><text x="192" y="36" text-anchor="middle" font-size="12" class="t-dim">HIT → return (≈0,3 ms)</text>
+  <path d="M380,135 L480,195" class="wire-brick" marker-end="url(#ah2)"/><text x="420" y="152" font-size="12" class="t-dim">MISS</text>
+  <path d="M650,195 L720,140" class="wire" marker-end="url(#ah2)"/>
+  <path d="M800,151 C800,245 80,250 80,154" class="wire" marker-end="url(#ah2)"/><text x="440" y="246" text-anchor="middle" font-size="12" class="t-dim">return</text>
+</svg>
+</div>
+
+<x-file path="app/services/cache.py" lang="python"></x-file>
+
+<h3>Kenapa Redis lebih cepat</h3>
+<p>Datanya ada di RAM; <code>GET</code> hanyalah lookup hash table tanpa parsing, query planning, locking, atau disk. Sisa ~0,2 ms kebanyakan adalah network round trip. PostgreSQL dengan cache yang hangat juga cepat (~1 ms) — keuntungan utamanya bukan “kecepatan”, melainkan mengurangi <em>beban</em> database, yang punya batas koneksi keras.</p>
+
+<div class="grid-2">
+<div><h4>Layak di-cache</h4><ul><li>Data yang sering dibaca dan jarang berubah: detail task</li><li>Hasil komputasi yang mahal</li><li>Data yang boleh stale ≤ 60 detik</li></ul></div>
+<div><h4>Jangan di-cache</h4><ul><li><em>Status</em> task — client melakukan polling justru untuk melihat state terbaru</li><li>Keputusan authorization dan saldo</li><li>List ber-pagination — invalidation lintas halaman sulit</li><li>Apa pun yang lebih murah dihitung daripada di-invalidate dengan benar</li></ul></div>
+</div>
+
+<h3>TTL, stale data, invalidation, stampede</h3>
+<ul>
+<li><strong>TTL</strong> membatasi seberapa stale data bisa: meskipun ada invalidation yang terlewat, entry akan hilang dalam 60–70 detik. <strong>Jitter</strong> mencegah key yang ditulis bersamaan kedaluwarsa bersamaan.</li>
+<li><strong>Invalidation</strong> adalah <code>DEL</code> <em>setelah</em> commit ke database. Menghapus sebelum commit membuat reader yang berjalan bersamaan bisa meng-cache ulang row lama. Masih ada race kecil (reader memuat row lama → writer commit + delete → reader menulis nilai lama); TTL adalah jaring pengamannya.</li>
+<li><strong>Cache stampede</strong>: key populer kedaluwarsa dan 500 request miss bersamaan, semuanya menghantam PostgreSQL. <code>SET lock NX PX 2000</code> yang singkat membuat hanya satu request yang memuat ulang, sementara yang lain menunggu 50 ms lalu membaca cache lagi.</li>
+<li><strong>Penanganan kegagalan Redis</strong>: setiap panggilan Redis menangkap error, menaikkan <code>cache_operations_total{result="error"}</code>, lalu jatuh ke PostgreSQL. Socket timeout 500 ms sehingga Redis yang hang hanya memakan setengah detik, bukan tiga puluh.</li>
+</ul>
+
+<h3>Rate limiting</h3>
+<x-file path="app/services/rate_limiter.py" lang="python"></x-file>
+
+<h3>Verifikasi</h3>
+<x-code lang="bash">
+docker compose exec redis sh -c 'redis-cli -a "$REDIS_PASSWORD" --no-auth-warning MONITOR' &
+curl -s localhost:8080/api/v1/tasks/$ID -H "$AUTH" > /dev/null   # MISS: GET, SET NX lock, SET task, EVAL release
+curl -s localhost:8080/api/v1/tasks/$ID -H "$AUTH" > /dev/null   # HIT: hanya GET
+kill %1
+docker compose exec redis sh -c 'redis-cli -a "$REDIS_PASSWORD" --no-auth-warning TTL task:v1:'"$ID"
+curl -s localhost:9090/api/v1/query --data-urlencode 'query=sum by (result) (cache_operations_total)' | jq '.data.result'
+</x-code>
+<x-out>
+"GET" "task:v1:7c0e..."
+"SET" "lock:task:v1:7c0e..." "..." "NX" "PX" "2000"
+"SET" "task:v1:7c0e..." "{...}" "EX" "67"
+"EVAL" "if redis.call('get', KEYS[1]) == ARGV[1] ..." "1" "lock:task:v1:7c0e..." "..."
+"GET" "task:v1:7c0e..."
+(integer) 58
+</x-out>
+
+<details class="errors"><summary>Error yang sering muncul</summary><div class="inner">
+<ul>
+<li><code>NOAUTH Authentication required</code> — client tidak memakai <code>REDIS_PASSWORD</code>.</li>
+<li><code>OOM command not allowed when used memory &gt; 'maxmemory'</code> — policy-nya <code>noeviction</code>; di sini kita pakai <code>allkeys-lru</code>.</li>
+<li>Read masih stale lama setelah update — invalidation dilakukan sebelum commit, atau ada code path yang lupa melakukan invalidation.</li>
+<li><code>ERR unknown command 'KEYS'</code> — sengaja dinonaktifkan di <code>redis.conf</code>; gunakan <code>SCAN</code>.</li>
+</ul>
+</div></details>
+</section>
+
+<section class="step" id="rabbitmq" data-phase="Bangun di lokal" data-title="RabbitMQ">
+<dl class="brief">
+  <div><dt>Tujuan</dt><dd>Memindahkan pekerjaan yang lama keluar dari jalur request dengan message yang durable, di-acknowledge, dan bisa di-retry.</dd></div>
+  <div><dt>Kenapa</dt><dd>Request HTTP yang butuh 30 detik menahan koneksi, terkena timeout proxy, dan kehilangan pekerjaan jika prosesnya mati.</dd></div>
+  <div><dt>Prasyarat</dt><dd>Langkah 8.</dd></div>
+  <div><dt>Dampak ke arsitektur</dt><dd>Temporal decoupling: menerima pekerjaan dan mengerjakannya kini di-scale dan gagal secara independen.</dd></div>
+</dl>
+
+<h3>Kenapa perlu broker, dan kapan tidak</h3>
+<p>Tanpa queue, <code>POST /process</code> akan mengerjakan tugasnya secara langsung: client menunggu, read timeout Nginx 30 detik memutus task yang lama, lonjakan traffic membebani CPU API, dan deploy membunuh pekerjaan yang sedang berjalan. Dengan RabbitMQ, API meng-commit niatnya, mem-publish message, dan mengembalikan <code>202</code> dalam hitungan milidetik; worker menarik pekerjaan sesuai kemampuannya; pekerjaan yang belum selesai selamat dari crash.</p>
+<p><strong>Kapan tidak perlu</strong>: jika pekerjaan selesai &lt; 1 detik, kerjakan langsung saja. Jika butuh histori event yang bisa di-replay, gunakan Kafka. Jika di AWS dan tidak ingin mengoperasikan broker, SQS memberi hampir semua ini tanpa server. Tabel PostgreSQL dengan <code>SELECT … FOR UPDATE SKIP LOCKED</code> adalah queue yang sangat layak untuk volume sedang — dan menghilangkan masalah dual-write di bawah.</p>
+
+<h3>Topologi</h3>
+<div class="diagram" role="img" aria-label="Exchange dan queue RabbitMQ">
+<svg viewBox="0 0 920 300" xmlns="http://www.w3.org/2000/svg">
+  <defs><marker id="ah3" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0,0 L10,5 L0,10 z" class="arrow"/></marker></defs>
+  <rect x="20" y="40" width="110" height="50" rx="6" class="box"/><text x="75" y="70" text-anchor="middle" class="t-label" font-size="13">API</text>
+  <rect x="190" y="40" width="150" height="50" rx="25" class="box-soft"/><text x="265" y="62" text-anchor="middle" class="t-label" font-size="13">exchange</text><text x="265" y="79" text-anchor="middle" font-size="11">tasks (direct)</text>
+  <rect x="410" y="40" width="200" height="50" rx="4" class="box"/><text x="510" y="62" text-anchor="middle" class="t-label" font-size="13">queue</text><text x="510" y="79" text-anchor="middle" font-size="11">tasks.process</text>
+  <rect x="700" y="10" width="190" height="42" rx="6" class="box"/><text x="795" y="36" text-anchor="middle" class="t-label" font-size="13">worker-1  (prefetch 4)</text>
+  <rect x="700" y="72" width="190" height="42" rx="6" class="box"/><text x="795" y="98" text-anchor="middle" class="t-label" font-size="13">worker-2  (prefetch 4)</text>
+  <path d="M130,65 L190,65" class="wire-cobalt" marker-end="url(#ah3)"/>
+  <path d="M340,65 L410,65" class="wire-cobalt" marker-end="url(#ah3)"/><text x="375" y="56" text-anchor="middle" font-size="10" class="t-dim">task.process</text>
+  <path d="M610,58 L700,32" class="wire-cobalt" marker-end="url(#ah3)"/>
+  <path d="M610,72 L700,92" class="wire-cobalt" marker-end="url(#ah3)"/>
+  <rect x="410" y="170" width="200" height="110" rx="4" class="box-soft"/>
+  <text x="510" y="192" text-anchor="middle" class="t-label" font-size="13">tasks.retry.1 · .2 · .3</text>
+  <text x="510" y="214" text-anchor="middle" font-size="11">TTL 5 s · 30 s · 120 s</text>
+  <text x="510" y="234" text-anchor="middle" font-size="11">tanpa consumer</text>
+  <text x="510" y="254" text-anchor="middle" font-size="11">saat expired → dead-letter ke [tasks]</text>
+  <rect x="700" y="200" width="190" height="56" rx="4" class="box"/><text x="795" y="224" text-anchor="middle" class="t-label" font-size="13">tasks.dead-letter</text><text x="795" y="243" text-anchor="middle" font-size="11">via tasks.dlx · diperiksa manual</text>
+  <path d="M795,114 C795,150 640,160 612,190" class="wire-cobalt" marker-end="url(#ah3)"/><text x="690" y="150" font-size="10" class="t-dim">error sementara: publish retry.N, ack</text>
+  <path d="M870,114 L850,200" class="wire-brick" marker-end="url(#ah3)"/><text x="878" y="165" font-size="10" class="t-dim">nack</text>
+  <path d="M410,225 C300,225 300,110 480,92" class="wire" marker-end="url(#ah3)"/>
+</svg>
+</div>
+<x-file path="app/core/rabbitmq.py" lang="python"></x-file>
+
+<div class="table-wrap"><table>
+<thead><tr><th>Istilah</th><th>Artinya di sini</th></tr></thead>
+<tbody>
+<tr><td>Producer</td><td>API (<code>RabbitTaskPublisher</code>)</td></tr>
+<tr><td>Exchange</td><td>Router. Producer mem-publish ke exchange, tidak pernah langsung ke queue</td></tr>
+<tr><td>Routing key / binding</td><td><code>task.process</code> mengikat exchange ke <code>tasks.process</code></td></tr>
+<tr><td>Queue</td><td>Buffer durable berisi message yang menunggu consumer</td></tr>
+<tr><td>Consumer</td><td>Proses worker; banyak consumer di satu queue = <strong>competing consumers</strong> — setiap message hanya diterima satu consumer</td></tr>
+<tr><td>Acknowledgement (ack)</td><td>“Selesai, hapus.” Dikirim hanya setelah commit ke DB</td></tr>
+<tr><td>NACK / reject</td><td>“Tidak bisa diproses.” <code>requeue=True</code> → kembali ke queue; <code>False</code> → dead-letter exchange</td></tr>
+<tr><td>Prefetch (QoS)</td><td>Jumlah maksimum message belum di-ack yang dikirim ke satu consumer (4): back-pressure dan distribusi yang adil</td></tr>
+<tr><td>Durability</td><td>Queue <code>durable=True</code> + message <code>delivery_mode=PERSISTENT</code> = selamat saat broker restart</td></tr>
+<tr><td>Publisher confirms</td><td>Broker mengonfirmasi sudah menerima message sebelum API mengembalikan 202</td></tr>
+<tr><td>Dead-letter queue</td><td>Poison message berakhir di sini, bukan berputar selamanya</td></tr>
+<tr><td>Idempotency</td><td>Memproses message yang sama dua kali memberi efek yang sama dengan sekali</td></tr>
+</tbody></table></div>
+
+<h3>Masalah dual-write</h3>
+<x-file path="app/services/task_service.py" lang="python" lines="116-148"></x-file>
+<p>Database dan broker tidak bisa berbagi satu transaction. Commit-lalu-publish berarti crash di antara keduanya membuat task tetap <code>queued</code> tanpa message. Publish-lalu-commit lebih buruk: worker bisa menerima message untuk row yang belum terlihat. <strong>Transactional outbox</strong> memperbaikinya: insert row <code>outbox</code> di transaction yang sama; sebuah relay mem-publish row outbox lalu menandainya terkirim. Ini dicatat sebagai improvement agar Anda bisa mengimplementasikannya setelah melihat celahnya sendiri.</p>
+
+<h3>Verifikasi</h3>
+<x-code lang="bash">
+docker compose exec rabbitmq rabbitmqctl list_exchanges name type durable | grep tasks
+docker compose exec rabbitmq rabbitmqctl list_queues name durable messages consumers arguments
+docker compose exec rabbitmq rabbitmqctl list_consumers queue_name prefetch_count
+</x-code>
+<x-out>
+tasks          direct  true
+tasks.dlx      direct  true
+tasks.retry    direct  true
+tasks.process       true  0  2  [{"x-dead-letter-exchange","tasks.dlx"},{"x-dead-letter-routing-key","task.dead"}]
+tasks.retry.1       true  0  0  [{"x-message-ttl",5000},{"x-dead-letter-exchange","tasks"},...]
+tasks.dead-letter   true  0  0  []
+tasks.process  4
+tasks.process  4
+</x-out>
+<p>Latih retry: buat task dengan <code>"payload":{"kind":"sleep","duration_seconds":1,"failure_rate":1}</code> lalu proses. Perhatikan <code>tasks.retry.1</code>, <code>.2</code>, <code>.3</code> terisi lalu kosong lagi di management UI; setelah ~155 detik task menjadi <code>failed</code> dan message-nya ada di <code>tasks.dead-letter</code>.</p>
+
+<details class="errors"><summary>Error yang sering muncul</summary><div class="inner">
+<ul>
+<li><code>PRECONDITION_FAILED - inequivalent arg 'x-message-ttl'</code> — argument queue diubah; hapus queue-nya (management UI) lalu restart worker.</li>
+<li><code>ACCESS_REFUSED - Login was refused</code> — credential berbeda dengan yang dipakai saat volume diinisialisasi; RabbitMQ hanya membuat default user saat boot pertama.</li>
+<li>Message tertahan di “Unacked” — consumer menunggu sesuatu tanpa akhir; consumer yang melebihi <code>consumer_timeout</code> channel-nya ditutup.</li>
+<li>Publisher menggantung — alarm memori/disk (flow control). Cek <code>rabbitmq-diagnostics alarms</code>.</li>
+</ul>
+</div></details>
+</section>
+
+<section class="step" id="worker" data-phase="Bangun di lokal" data-title="Worker">
+<dl class="brief">
+  <div><dt>Tujuan</dt><dd>Memproses message dengan efek <em>exactly-once</em> di atas pengiriman at-least-once.</dd></div>
+  <div><dt>Kenapa</dt><dd>Duplikasi <em>pasti</em> terjadi: redelivery setelah crash, retry yang berbalapan dengan worker yang lambat, retry di sisi publisher.</dd></div>
+  <div><dt>Prasyarat</dt><dd>Langkah 9.</dd></div>
+  <div><dt>Dampak ke arsitektur</dt><dd>Tier pemrosesan yang independen dan bisa di-scale horizontal.</dd></div>
+</dl>
+
+<x-file path="app/workers/consumer.py" lang="python"></x-file>
+
+<h3>Idempotency lewat lease</h3>
+<x-code lang="sql" title="TaskRepository.claim()">
+UPDATE tasks
+SET status = 'processing', attempts = attempts + 1, lease_expires_at = now() + interval '60 seconds'
+WHERE id = $1
+  AND (status = 'queued' OR (status = 'processing' AND lease_expires_at < now()))
+RETURNING *;
+</x-code>
+<div class="table-wrap"><table>
+<thead><tr><th>Situasi</th><th>Hasil claim()</th><th>Aksi worker</th></tr></thead>
+<tbody>
+<tr><td>Pengiriman normal</td><td>Row</td><td>Proses, complete, ack</td></tr>
+<tr><td>Duplikat dari task yang sudah selesai</td><td>None; status completed/failed</td><td>Ack lalu skip</td></tr>
+<tr><td>Duplikat saat worker lain sedang memproses</td><td>None; lease masih berlaku</td><td>Kirim ke retry queue (cek lagi nanti)</td></tr>
+<tr><td>Redelivery setelah worker crash</td><td>None sampai lease expired, lalu Row</td><td>Retry queue menunda melewati lease; lalu claim ulang</td></tr>
+</tbody></table></div>
+<p>Total delay retry (5 + 30 + 120 = 155 detik) harus lebih besar dari lease (60 detik) — worker menolak start jika tidak. Insert hasil memakai <code>ON CONFLICT (task_id) DO NOTHING</code>, sehingga dua penyelesaian pun hanya menulis satu hasil.</p>
+
+<h3>Graceful shutdown</h3>
+<p>Saat menerima <code>SIGTERM</code> (dari <code>docker stop</code>), worker membatalkan consumer-nya (tidak menerima message baru), menunggu task yang sedang berjalan hingga 25 detik, lalu menutup koneksi. Docker menunggu <code>stop_grace_period: 30s</code> sebelum <code>SIGKILL</code>. Message yang masih unacked di-requeue oleh RabbitMQ saat koneksi tertutup — tidak ada yang hilang, paling-paling duplikat, dan itu diserap oleh claim().</p>
+
+<h3>Verifikasi</h3>
+<x-code lang="bash">
+docker compose logs -f worker-1 worker-2 | grep -E 'task (claimed|completed|scheduled)'
+docker compose exec worker-1 python -c \
+ "import urllib.request;print(urllib.request.urlopen('http://127.0.0.1:9101/metrics').read().decode())" | grep worker_messages_total
+</x-code>
+<x-out>
+worker-2-1  | {"ts":"...","level":"INFO","message":"task claimed","service":"worker","instance":"worker-2","request_id":"5b3f...","task_id":"7c0e...","retry":0,"redelivered":false}
+worker-2-1  | {"ts":"...","level":"INFO","message":"task completed","instance":"worker-2","task_id":"7c0e...","duration_ms":3004}
+worker_messages_total{outcome="completed"} 1.0
+</x-out>
+</section>
+
+<section class="step" id="docker" data-phase="Bangun di lokal" data-title="Docker">
+<dl class="brief">
+  <div><dt>Tujuan</dt><dd>Mengemas aplikasi menjadi satu image yang immutable; menjalankan sistem dengan Compose.</dd></div>
+  <div><dt>Kenapa</dt><dd>Byte yang sama persis yang dites di CI adalah byte yang berjalan di EC2.</dd></div>
+  <div><dt>Prasyarat</dt><dd>Langkah 5.</dd></div>
+  <div><dt>Dampak ke arsitektur</dt><dd>Proses menjadi unit yang bisa diganti, dengan health, resource, dan restart behaviour yang dideklarasikan.</dd></div>
+</dl>
+
+<h3>Dockerfile</h3>
+<x-file path="Dockerfile" lang="dockerfile"></x-file>
+<div class="table-wrap"><table>
+<thead><tr><th>Konsep</th><th>Di proyek ini</th></tr></thead>
+<tbody>
+<tr><td>Image</td><td>Layer read-only: Python + venv + kode + deploy bundle. Di-tag dengan git SHA</td></tr>
+<tr><td>Container</td><td>Proses yang berjalan dari image, dengan filesystem, network namespace, dan batas cgroup sendiri</td></tr>
+<tr><td>Multi-stage build</td><td>Compiler tertinggal di stage <code>builder</code>; runtime image lebih kecil dengan lebih sedikit vulnerability</td></tr>
+<tr><td>Volume</td><td><code>postgres-data</code>, <code>rabbitmq-data</code>: data bertahan lebih lama dari container</td></tr>
+<tr><td>Network</td><td><code>edge</code>, <code>backend</code>, <code>metrics</code>: DNS berdasarkan nama service, isolasi antar grup</td></tr>
+<tr><td>Environment variable</td><td><code>env_file: .env</code>; <code>INSTANCE_ID</code> per service</td></tr>
+<tr><td>Healthcheck</td><td>Perintah liveness; Compose <code>depends_on: condition: service_healthy</code> mengatur urutan startup</td></tr>
+<tr><td>Restart policy</td><td><code>unless-stopped</code>: restart saat crash dan saat daemon restart, tidak setelah stop manual</td></tr>
+</tbody></table></div>
+
+<h3>docker-compose.yml</h3>
+<x-file path="docker-compose.yml" lang="yaml"></x-file>
+<p>Per service: <strong>postgres/redis/rabbitmq</strong> — image resmi dengan konfigurasi yang di-commit, healthcheck, dan volume; port admin hanya di-publish ke <code>127.0.0.1</code>. <strong>migrate</strong> — one-off job. <strong>api-1..3</strong> — image yang sama, <code>INSTANCE_ID</code> berbeda, batas 1 CPU / 512 MB agar saturasi bisa diamati. <strong>worker-1..2</strong> — image yang sama, command berbeda. <strong>nginx</strong> — satu-satunya service yang di-publish ke jaringan lokal Anda. <strong>prometheus/grafana/exporter</strong> — observability. <strong>k6</strong> — di balik profile, hanya jalan saat diminta.</p>
+
+<h3>Dari Compose di laptop ke banyak server EC2</h3>
+<div class="table-wrap"><table>
+<thead><tr><th>Aspek</th><th>Compose lokal</th><th>Multi-EC2</th></tr></thead>
+<tbody>
+<tr><td>Service discovery</td><td>Docker DNS: <code>postgres</code></td><td>Private IP dari <code>node.env</code>: <code>10.20.11.50</code></td></tr>
+<tr><td>Isolasi</td><td>Docker network</td><td>Subnet + Security Group (+ ufw)</td></tr>
+<tr><td>Image</td><td><code>build: .</code></td><td>Di-pull dari ECR dengan tag immutable</td></tr>
+<tr><td>Secret</td><td>File <code>.env</code></td><td>Parameter Store → file 0600 per service</td></tr>
+<tr><td>File Compose</td><td>Satu</td><td>Satu per role di <code>deploy/compose/</code>, berbagi <code>common.yml</code></td></tr>
+<tr><td>Failure domain</td><td>Laptop Anda</td><td>Setiap instance gagal secara independen — partial failure menjadi nyata</td></tr>
+<tr><td>Port yang di-publish</td><td><code>127.0.0.1:…</code></td><td><code>${PRIVATE_IP}:…</code> (jangan <code>0.0.0.0</code>, lihat Firewall)</td></tr>
+</tbody></table></div>
+
+<details class="errors"><summary>Error yang sering muncul</summary><div class="inner">
+<ul>
+<li>Container terus restart: <code>docker compose logs --tail=50 api-1</code>, lalu <code>docker inspect --format '{{json .State}}'</code> untuk exit code (137 = di-kill/OOM, 1 = error aplikasi).</li>
+<li><code>exec format error</code> di EC2 — image di-build di Apple Silicon (arm64) untuk instance x86: build dengan <code>--platform linux/amd64</code>.</li>
+<li>Perubahan <code>.env</code> tidak berlaku — container harus dibuat ulang: <code>docker compose up -d</code> (bukan <code>restart</code>).</li>
+<li>Disk penuh karena image/log: <code>docker system df</code>, <code>docker image prune -a</code>; log rotation sudah di-set di compose.</li>
+</ul>
+</div></details>
+</section>
+
+<section class="step" id="nginx" data-phase="Bangun di lokal" data-title="Nginx">
+<dl class="brief">
+  <div><dt>Tujuan</dt><dd>Menempatkan satu reverse proxy di depan tiga API server dan memahami setiap baris konfigurasinya.</dd></div>
+  <div><dt>Kenapa</dt><dd>Client butuh satu alamat; server perlu bisa datang dan pergi tanpa disadari client.</dd></div>
+  <div><dt>Prasyarat</dt><dd>Langkah 11.</dd></div>
+  <div><dt>Dampak ke arsitektur</dt><dd>Menambahkan tier load balancing — sekaligus single point of failure di edge.</dd></div>
+</dl>
+
+<p><strong>Reverse proxy</strong> menerima koneksi client lalu membuka koneksinya sendiri ke backend (“upstream”). Client tidak pernah melihat API server. Ini memungkinkan TLS termination di satu tempat, load balancing, retry, buffering untuk client yang lambat, batas ukuran request, rate limiting di edge, dan menyembunyikan topologi internal.</p>
+
+<x-file path="nginx/nginx.conf" lang="nginx"></x-file>
+<x-file path="nginx/conf.d/local.conf" lang="nginx"></x-file>
+<x-file path="nginx/upstreams/active.conf" lang="nginx"></x-file>
+<x-file path="nginx/snippets/proxy-api.conf" lang="nginx"></x-file>
+
+<div class="table-wrap"><table>
+<thead><tr><th>Konsep</th><th>Directive</th><th>Efek</th></tr></thead>
+<tbody>
+<tr><td>Upstream</td><td><code>upstream api_backend</code></td><td>Pool server yang diberi nama</td></tr>
+<tr><td>Round robin</td><td>(default)</td><td>Request bergiliran api-1 → api-2 → api-3; bisa diberi <code>weight</code></td></tr>
+<tr><td>Health check</td><td><code>max_fails=3 fail_timeout=10s</code></td><td><em>Passive</em>: kegagalan saat traffic nyata mengeluarkan server selama 10 detik. Active probing adalah fitur Nginx Plus / ALB</td></tr>
+<tr><td>Connection handling</td><td><code>keepalive 32</code>, <code>proxy_http_version 1.1</code>, <code>Connection ""</code></td><td>Memakai ulang koneksi TCP ke upstream</td></tr>
+<tr><td>Proxy timeout</td><td><code>proxy_connect_timeout 3s</code>, <code>proxy_read_timeout 30s</code></td><td>Server mati hanya memakan 3 detik, bukan 60; read timeout adalah jeda antar-read, bukan total</td></tr>
+<tr><td>Request timeout</td><td><code>client_header_timeout</code>, <code>client_body_timeout</code></td><td>Client lambat tidak bisa menahan worker Nginx</td></tr>
+<tr><td>Retry</td><td><code>proxy_next_upstream error timeout http_502…</code></td><td>Failover untuk request idempotent; POST tidak di-retry setelah terkirim</td></tr>
+<tr><td>Buffering</td><td><code>proxy_buffering on</code></td><td>Proses Python langsung bebas begitu response selesai dibuat</td></tr>
+<tr><td>Header</td><td><code>X-Forwarded-For</code>, <code>X-Forwarded-Proto</code>, <code>X-Request-ID</code></td><td>IP client asli, scheme asli, correlation ID</td></tr>
+</tbody></table></div>
+
+<h3>Verifikasi load balancing</h3>
+<x-code lang="bash">
+for i in $(seq 9); do curl -s localhost:8080/health/live | jq -r .instance; done
+docker compose logs nginx --since 1m | grep -o '"upstream_addr":"[^"]*"' | sort | uniq -c
+</x-code>
+<x-out>
+api-1
+api-2
+api-3
+api-1
+...
+      3 "upstream_addr":"172.19.0.7:8000"
+      3 "upstream_addr":"172.19.0.8:8000"
+      3 "upstream_addr":"172.19.0.9:8000"
+</x-out>
+
+<details class="errors"><summary>Error yang sering muncul</summary><div class="inner">
+<div class="table-wrap"><table>
+<thead><tr><th>Status / log</th><th>Arti</th><th>Periksa</th></tr></thead>
+<tbody>
+<tr><td>502 <code>connect() failed (111: Connection refused)</code></td><td>Upstream tidak listen</td><td>Container API mati atau port salah</td></tr>
+<tr><td>504 <code>upstream timed out (110)</code></td><td>API lebih lambat dari <code>proxy_read_timeout</code></td><td>Query lambat, event loop terblokir</td></tr>
+<tr><td><code>host not found in upstream "api-2"</code> saat startup</td><td>Nama DNS tidak ada</td><td>Container tidak ada; <code>resolve</code> + <code>resolver</code> mengatasinya di lokal</td></tr>
+<tr><td>502 sporadis saat beban tinggi, upstream “prematurely closed”</td><td>Race condition keepalive</td><td>Keep-alive upstream harus lebih lama dari Nginx (75 detik vs 60 detik)</td></tr>
+<tr><td>413 Request Entity Too Large</td><td><code>client_max_body_size</code></td><td>Batas 1 MB yang disengaja</td></tr>
+</tbody></table></div>
+<p>Selalu validasi sebelum reload: <code>docker compose exec nginx nginx -t</code>, lalu <code>nginx -s reload</code> (graceful: worker lama menyelesaikan request-nya dulu).</p>
+</div></details>
+</section>
+
+<section class="step" id="concurrency" data-phase="Bangun di lokal" data-title="Concurrency">
+<dl class="brief">
+  <div><dt>Tujuan</dt><dd>Tahu alat concurrency mana yang dipakai di mana, dan kenapa.</dd></div>
+  <div><dt>Kenapa</dt><dd>Salah pilih akan membuang mesin atau diam-diam membuat semuanya berjalan berurutan.</dd></div>
+  <div><dt>Prasyarat</dt><dd>Langkah 6 dan 10.</dd></div>
+  <div><dt>Dampak ke arsitektur</dt><dd>Menentukan berapa request dan task yang benar-benar ditangani setiap container.</dd></div>
+</dl>
+
+<div class="grid-2">
+<div><h4>Concurrency</h4><p>Membuat banyak pekerjaan maju <em>dalam rentang waktu yang tumpang tindih</em>, tidak harus di detik yang sama. Satu koki dengan empat panci: aduk satu, sementara yang lain mendidih. Ideal untuk menunggu (jaringan, disk).</p></div>
+<div><h4>Parallelism</h4><p>Mengeksekusi banyak pekerjaan <em>di detik yang sama</em> pada core berbeda. Empat koki. Dibutuhkan untuk komputasi (hashing, pemrosesan gambar).</p></div>
+</div>
+
+<div class="table-wrap"><table>
+<thead><tr><th>Alat</th><th>Apa itu</th><th>Paralel untuk kode Python?</th><th>Dipakai di mana</th></tr></thead>
+<tbody>
+<tr><td>Coroutine (<code>async def</code>)</td><td>Fungsi yang bisa berhenti sejenak di <code>await</code></td><td>Tidak</td><td>Semua endpoint, repository, cache, publisher, consumer</td></tr>
+<tr><td>Event loop</td><td>Scheduler yang menjalankan coroutine di satu thread; melanjutkan yang I/O-nya sudah siap</td><td>Tidak</td><td>Satu per proses uvicorn, satu per worker</td></tr>
+<tr><td>Thread</td><td>Thread OS yang berbagi memori; GIL hanya mengizinkan satu thread menjalankan bytecode Python</td><td>Hanya saat menunggu / di kode C yang melepas GIL</td><td><code>asyncio.to_thread(bcrypt…)</code> — menjaga event loop tetap responsif</td></tr>
+<tr><td>Process</td><td>Interpreter, memori, dan GIL terpisah</td><td>Ya</td><td><code>ProcessPoolExecutor</code> untuk <code>kind="hash"</code></td></tr>
+<tr><td>Container / host</td><td>Proses terpisah di mesin terpisah</td><td>Ya</td><td>3 API, 2 worker</td></tr>
+</tbody></table></div>
+
+<h3>Penerapannya</h3>
+<ul>
+<li><strong>FastAPI</strong>: satu proses uvicorn per container menangani ratusan request bersamaan karena sebagian besar waktunya dihabiskan menunggu PostgreSQL/Redis. Menambah kapasitas CPU = menambah container, bukan menambah thread.</li>
+<li><strong>RabbitMQ consumer</strong>: <code>prefetch_count=4</code> berarti setiap worker menangani hingga 4 task sekaligus. Untuk task <code>sleep</code>, keempatnya berjalan concurrent di satu core; throughput ≈ 2 worker × 4 / durasi task.</li>
+<li><strong>Background worker</strong>: task <code>hash</code> berjalan di process pool (2 proses): benar-benar paralel, tapi maksimal sebanyak jumlah core. Mengatur prefetch 50 untuk pekerjaan CPU hanya memindahkan antrean ke dalam worker, padahal di RabbitMQ message itu bisa diambil worker lain.</li>
+</ul>
+
+<x-code lang="bash" title="Lihat perbedaannya">
+# 40 task sleep, masing-masing 2 detik: total ~10-12 detik (8 slot concurrent)
+docker compose --profile loadtest run --rm -e RATE=20 -e DURATION=2s -e TASK_SECONDS=2 \
+  k6 run /scripts/task-processing.js
+# 40 task hash: dibatasi jumlah core CPU, bukan prefetch
+docker compose --profile loadtest run --rm -e RATE=20 -e DURATION=2s -e KIND=hash \
+  k6 run /scripts/task-processing.js
+docker stats --no-stream worker-1 worker-2
+</x-code>
+</section>
+
+<section class="step" id="distributed-concepts" data-phase="Bangun di lokal" data-title="Konsep Distributed System">
+<dl class="brief">
+  <div><dt>Tujuan</dt><dd>Menghubungkan kosakata teori dengan baris kode nyata di proyek ini — lalu membuktikannya dengan merusak sistem.</dd></div>
+  <div><dt>Kenapa</dt><dd>Konsep ini baru berguna ketika Anda bisa mengenalinya di sistem yang sedang bermasalah.</dd></div>
+  <div><dt>Prasyarat</dt><dd>Stack lokal berjalan; load test di terminal kedua (<code>make load-normal</code>).</dd></div>
+  <div><dt>Dampak ke arsitektur</dt><dd>Menjelaskan perilaku semua yang dibangun setelah ini.</dd></div>
+</dl>
+
+<dl class="qa">
+<dt>Horizontal vs vertical scaling</dt><dd>Vertical: mesin yang lebih besar (sederhana, ada batas atas, butuh downtime). Horizontal: lebih banyak mesin (tanpa batas untuk tier stateless, butuh load balancing dan state bersama). Di sini API di-scale horizontal; PostgreSQL di-scale vertical.</dd>
+<dt>Stateless vs stateful</dt><dd>Instance API tidak menyimpan apa pun yang dibutuhkan request berikutnya — session berupa JWT, counter di Redis, data di PostgreSQL — jadi instance mana pun bisa melayani request apa pun. PostgreSQL dan RabbitMQ menyimpan data dan tidak bisa ditukar sembarangan.</dd>
+<dt>Service-to-service communication</dt><dd>Synchronous (HTTP Nginx→API, SQL, Redis): sederhana, tapi pemanggil menunggu dan ikut gagal bersama yang dipanggil. Asynchronous (AMQP): pemanggil tidak menunggu, dengan harga hasil yang eventual dan kemungkinan duplikat.</dd>
+<dt>Network failure &amp; partial failure</dt><dd>Redis bisa tidak terjangkau dari api-2 sementara api-1 masih bisa. Kode harus menganggap “satu dependency ini mati” sebagai kondisi normal (cache fail-open, readiness degraded).</dd>
+<dt>Timeout</dt><dd>Satu-satunya cara membedakan “lambat” dan “mati”. Setiap hop punya timeout: Nginx connect 3 detik / read 30 detik, pool 5 detik, statement 5 detik, Redis 0,5 detik, publish 5 detik, health check 2 detik.</dd>
+<dt>Retry &amp; exponential backoff</dt><dd>Retry langsung melipatgandakan beban pada service yang sedang kesulitan. Backoff menggandakan waktu tunggu; jitter mengacaknya (<code>app/utils/retry.py</code>, retry queue RabbitMQ 5/30/120 detik).</dd>
+<dt>Idempotency</dt><dd>Retry hanya aman jika mengulang operasi tidak berbahaya: conditional UPDATE, <code>ON CONFLICT DO NOTHING</code>, lease.</dd>
+<dt>Fault tolerance</dt><dd>Tetap beroperasi meski sebagian komponen gagal: dua worker, tiga API, Redis fail-open.</dd>
+<dt>Availability vs reliability</dt><dd>Availability: persentase waktu sistem menjawab (99,9 % ≈ 43 menit mati per bulan). Reliability: sistem menjawab dengan <em>benar</em> — sistem yang cepat mengembalikan data stale itu available tapi tidak reliable.</dd>
+<dt>Consistency &amp; eventual consistency</dt><dd>PostgreSQL memberi strong consistency per transaction. Status task eventually consistent dengan “pekerjaannya”: <code>queued</code> sekarang, <code>completed</code> beberapa detik kemudian. Cache eventually consistent dengan PostgreSQL, dibatasi TTL.</dd>
+<dt>CAP theorem secara praktis</dt><dd>Saat terjadi network partition, penyimpanan yang direplikasi harus memilih: menolak sebagian request (consistency) atau menjawab dengan data yang mungkin stale (availability). Di sini hanya ada satu PostgreSQL, jadi partition dari node data berarti unavailable — secara konstruksi kita memilih C. Cache Redis adalah pilihan bernuansa AP: menyajikan data yang mungkin stale daripada gagal. Di luar partition, trade-off sehari-harinya adalah latency vs consistency (PACELC).</dd>
+</dl>
+
+<h3>Buktikan, jangan hanya dibaca</h3>
+<x-code lang="bash">
+scripts/chaos.sh list
+scripts/chaos.sh kill-api        # horizontal scaling + passive health check
+scripts/chaos.sh stop-redis      # partial failure, fail-open
+scripts/chaos.sh kill-worker     # at-least-once + idempotency + lease
+scripts/chaos.sh latency-db      # timeout, pool exhaustion
+scripts/chaos.sh stop-rabbitmq   # coupling sync vs async
+</x-code>
+<p>Analisis lengkap setiap skenario ada di langkah 38, “Breaking the System”.</p>
+</section>

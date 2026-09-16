@@ -1,0 +1,68 @@
+# Prometheus — AWS multi-EC2 targets (private IPs, fixed at instance launch).
+# Runs on the ops node (10.20.11.40). Every target below is reachable ONLY inside the VPC;
+# Security Groups allow the metrics ports exclusively from sg-ops.
+#
+# CHANGE the IPs if you chose different addresses in infra/aws/cli/00-config.sh.
+
+global:
+  scrape_interval: 15s
+  scrape_timeout: 10s
+  evaluation_interval: 15s
+  external_labels:
+    environment: production
+
+rule_files:
+  - /etc/prometheus/rules/*.yml
+
+scrape_configs:
+  - job_name: prometheus
+    static_configs:
+      - targets: ["localhost:9090"]
+
+  - job_name: api
+    static_configs:
+      - targets: ["10.20.1.10:8000"]
+        labels: { instance_name: api-1, node: edge }
+      - targets: ["10.20.11.20:8000"]
+        labels: { instance_name: api-2, node: app }
+      - targets: ["10.20.11.20:8001"]
+        labels: { instance_name: api-3, node: app }
+
+  - job_name: worker
+    static_configs:
+      - targets: ["10.20.11.30:9101"]
+        labels: { instance_name: worker-1, node: broker }
+      - targets: ["worker-2:9101"]          # same host as Prometheus (Docker network)
+        labels: { instance_name: worker-2, node: ops }
+
+  - job_name: rabbitmq
+    static_configs:
+      - targets: ["10.20.11.30:15692"]
+
+  - job_name: rabbitmq-queues
+    metrics_path: /metrics/detailed
+    params:
+      family: [queue_coarse_metrics, queue_consumer_count]
+    static_configs:
+      - targets: ["10.20.11.30:15692"]
+
+  - job_name: postgres
+    static_configs:
+      - targets: ["10.20.11.50:9187"]
+
+  - job_name: redis
+    static_configs:
+      - targets: ["10.20.11.50:9121"]
+
+  - job_name: node
+    static_configs:
+      - targets: ["10.20.1.10:9100"]
+        labels: { instance_name: edge }
+      - targets: ["10.20.11.20:9100"]
+        labels: { instance_name: app }
+      - targets: ["10.20.11.30:9100"]
+        labels: { instance_name: broker }
+      - targets: ["10.20.11.40:9100"]
+        labels: { instance_name: ops }
+      - targets: ["10.20.11.50:9100"]
+        labels: { instance_name: data }

@@ -1,0 +1,57 @@
+# OPS node (private subnet): worker-2, Prometheus and Grafana.
+# Monitoring lives OUTSIDE the data and edge nodes so it survives their failure and can
+# tell you about it. (It shares a host with worker-2 only to save cost.)
+
+name: taskplatform
+
+services:
+  worker-2:
+    extends: { file: common.yml, service: app-base }
+    command: ["python", "-m", "app.workers.main"]
+    environment:
+      INSTANCE_ID: worker-2
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:9101/metrics', timeout=2)"]
+      interval: 15s
+      timeout: 3s
+      retries: 3
+      start_period: 20s
+
+  prometheus:
+    image: prom/prometheus:v3.4.0
+    restart: unless-stopped
+    command:
+      - --config.file=/etc/prometheus/prometheus.yml
+      - --storage.tsdb.retention.time=15d
+      - --storage.tsdb.retention.size=8GB
+      - --web.enable-lifecycle
+    volumes:
+      - ../../monitoring/prometheus/prometheus.aws.yml:/etc/prometheus/prometheus.yml:ro
+      - ../../monitoring/prometheus/rules:/etc/prometheus/rules:ro
+      - /data/prometheus:/prometheus
+    ports: ["127.0.0.1:9090:9090"]   # UI via port-forward only
+    logging:
+      driver: json-file
+      options: { max-size: "10m", max-file: "3" }
+
+  grafana:
+    image: grafana/grafana:12.0.0
+    restart: unless-stopped
+    env_file: [/opt/taskplatform/shared/grafana.env]   # GF_SECURITY_ADMIN_PASSWORD only
+    environment:
+      GF_SECURITY_ADMIN_USER: admin
+      GF_USERS_ALLOW_SIGN_UP: "false"
+      GF_ANALYTICS_REPORTING_ENABLED: "false"
+      PROMETHEUS_URL: http://prometheus:9090
+    volumes:
+      - ../../monitoring/grafana/provisioning:/etc/grafana/provisioning:ro
+      - ../../monitoring/grafana/dashboards:/var/lib/grafana/dashboards:ro
+      - /data/grafana:/var/lib/grafana
+    ports: ["127.0.0.1:3000:3000"]   # UI via port-forward only
+    depends_on: [prometheus]
+    logging:
+      driver: json-file
+      options: { max-size: "10m", max-file: "3" }
+
+  node-exporter:
+    extends: { file: common.yml, service: node-exporter }

@@ -1,0 +1,32 @@
+# AWS edge node — PHASE 1 (bootstrap, before a TLS certificate exists).
+# Rendered by the official nginx image: ${VARIABLES} are replaced from the environment
+# by envsubst at container start. Nginx's own $variables (lowercase) are left untouched.
+#
+# Serves the ACME HTTP-01 challenge so certbot can obtain the first certificate, and
+# proxies the API over plain HTTP so the deployment can be verified end to end.
+# Switch to edge-https.conf.template (NGINX_SITE_TEMPLATE=edge-https) once issued.
+
+upstream api_backend {
+    zone api_backend 64k;
+    server ${API_1_ADDR} max_fails=3 fail_timeout=10s;   # api-1 on this edge node
+    server ${API_2_ADDR} max_fails=3 fail_timeout=10s;   # api-2 on the app node
+    server ${API_3_ADDR} max_fails=3 fail_timeout=10s;   # api-3 on the app node
+    keepalive 32;
+    keepalive_timeout 60s;
+}
+
+server {
+    listen 80 default_server;
+    server_name ${DOMAIN};
+
+    location /.well-known/acme-challenge/ {
+        root /var/www/certbot;
+    }
+
+    location /api/     { include /etc/nginx/snippets/proxy-api.conf; }
+    location /health/  { include /etc/nginx/snippets/proxy-api.conf; }
+
+    location = /nginx-health { access_log off; default_type text/plain; return 200 "ok\n"; }
+    location = /metrics { return 404; }
+    location / { return 404; }
+}

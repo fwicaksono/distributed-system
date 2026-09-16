@@ -1,0 +1,1196 @@
+# PROJECT: Distributed Task Processing Platform
+
+I want to build one end-to-end production-style learning project whose primary purpose is to learn backend architecture, distributed systems, AWS infrastructure, networking, observability, containerization, and CI/CD.
+
+The business use case can remain intentionally simple. A normal web API / task management API is completely fine. Do NOT make the business logic unnecessarily complex.
+
+The main learning objective is the ARCHITECTURE.
+
+The final project should evolve from a simple single-server application into a distributed, scalable, observable, and deployable system running on AWS EC2.
+
+==================================================
+1. CORE TECHNOLOGY STACK
+==================================================
+
+Backend:
+- Python
+- FastAPI
+- REST API
+
+Database:
+- PostgreSQL
+
+Caching:
+- Redis
+
+Message Broker:
+- RabbitMQ
+
+Reverse Proxy / Load Balancer:
+- Nginx
+
+Containerization:
+- Docker
+- Docker Compose where appropriate
+
+Cloud:
+- AWS EC2
+
+Infrastructure / Networking:
+- VPC
+- Subnet
+- Security Group
+- IAM
+- SSH
+- Elastic IP
+- DNS
+- TLS / HTTPS
+- Linux administration
+- Firewall
+
+Observability:
+- Prometheus
+- Grafana
+
+CI/CD:
+- GitHub
+- GitHub Actions
+- Docker Image
+- Container Registry
+- Deploy to EC2
+
+Load Testing:
+- k6 or Locust
+
+==================================================
+2. TARGET ARCHITECTURE
+==================================================
+
+The final architecture should approximately look like this:
+
+                         INTERNET
+                            |
+                            v
+                    +---------------+
+                    |     NGINX     |
+                    | Reverse Proxy |
+                    | Load Balancer |
+                    +-------+-------+
+                            |
+              +-------------+-------------+
+              |             |             |
+              v             v             v
+          API SERVER 1  API SERVER 2  API SERVER 3
+            FastAPI       FastAPI       FastAPI
+              |             |             |
+              +-------------+-------------+
+                            |
+              +-------------+-------------+
+              |             |             |
+              v             v             v
+          PostgreSQL      Redis        RabbitMQ
+          Database        Cache         Queue
+                                          |
+                              +-----------+-----------+
+                              |                       |
+                              v                       v
+                          Worker 1                 Worker 2
+                          Background               Background
+                          Processing               Processing
+                              |                       |
+                              +-----------+-----------+
+                                          |
+                                          v
+                                      PostgreSQL
+
+Observability:
+
+                    Prometheus
+                         |
+                         v
+                      Grafana
+
+Deployment:
+
+GitHub
+   |
+   v
+GitHub Actions
+   |
+   v
+Build Docker Image
+   |
+   v
+Push to Container Registry
+   |
+   v
+Deploy to EC2
+   |
+   v
+Docker Containers
+
+
+==================================================
+3. AWS INFRASTRUCTURE
+==================================================
+
+The tutorial MUST teach and actually use these AWS concepts:
+
+1. EC2
+2. VPC
+3. Subnet
+4. Security Group
+5. SSH
+6. IAM
+7. Elastic IP
+8. DNS
+9. TLS / HTTPS
+10. Firewall
+11. Linux administration
+
+Explain every component in detail.
+
+For every AWS component, explain:
+
+- What it is
+- Why it is needed
+- What problem it solves
+- How it interacts with the other components
+- When it should NOT be used
+- How it is configured
+- Security considerations
+- Common mistakes
+- How to verify that it works
+
+Do not simply provide a list of AWS services.
+
+==================================================
+4. AWS NETWORKING
+==================================================
+
+Create a realistic VPC architecture.
+
+Explain:
+
+- VPC
+- CIDR
+- public subnet
+- private subnet
+- route table
+- Internet Gateway
+- NAT Gateway if needed
+- Security Group
+- inbound rules
+- outbound rules
+- public IP
+- private IP
+- Elastic IP
+
+Explain traffic flow in detail.
+
+For example:
+
+Internet
+  |
+  v
+DNS
+  |
+  v
+EC2 / Nginx
+  |
+  v
+FastAPI
+  |
+  +----> Redis
+  |
+  +----> RabbitMQ
+  |
+  +----> PostgreSQL
+
+Explain exactly which ports are open and WHY.
+
+Example ports:
+
+22    SSH
+80    HTTP
+443   HTTPS
+8000  FastAPI internal
+5432  PostgreSQL
+6379  Redis
+5672  RabbitMQ
+15672 RabbitMQ management if required
+
+Do NOT expose internal services unnecessarily to the public internet.
+
+Explain how Security Groups and Linux firewall rules differ.
+
+==================================================
+5. LINUX ADMINISTRATION
+==================================================
+
+The tutorial must include practical Linux administration on EC2.
+
+Teach:
+
+- SSH
+- users
+- sudo
+- permissions
+- chmod
+- chown
+- systemctl
+- journalctl
+- ps
+- top / htop
+- df
+- du
+- free
+- ss
+- netstat if relevant
+- curl
+- wget
+- grep
+- tail
+- cat
+- nano / vim
+- environment variables
+- process management
+- service management
+- log inspection
+- disk management
+- memory management
+
+Explain how to diagnose:
+
+- service not running
+- port not reachable
+- container crashing
+- high CPU
+- high memory
+- disk full
+- connection refused
+- timeout
+
+==================================================
+6. FASTAPI BACKEND
+==================================================
+
+Build a simple but properly structured FastAPI application.
+
+Use modular architecture.
+
+For example:
+
+app/
+    main.py
+    api/
+    services/
+    repositories/
+    models/
+    schemas/
+    core/
+    workers/
+    utils/
+
+Explain WHY the application is modular.
+
+Teach:
+
+- REST
+- HTTP
+- status codes
+- request validation
+- response models
+- dependency injection
+- middleware
+- error handling
+- logging
+- configuration
+- environment variables
+- database connection pooling
+
+Keep the business domain simple.
+
+Example endpoints:
+
+POST   /tasks
+GET    /tasks
+GET    /tasks/{id}
+POST   /tasks/{id}/process
+GET    /tasks/{id}/status
+DELETE /tasks/{id}
+
+==================================================
+7. POSTGRESQL
+==================================================
+
+Use PostgreSQL as the persistent database.
+
+Create a reasonable schema.
+
+Example:
+
+users
+tasks
+task_results
+task_logs
+
+Teach:
+
+- primary key
+- foreign key
+- indexes
+- constraints
+- transactions
+- isolation
+- connection pooling
+- migrations
+- query optimization
+- EXPLAIN ANALYZE
+
+Explain when PostgreSQL is used versus Redis.
+
+==================================================
+8. REDIS
+==================================================
+
+Use Redis for practical purposes.
+
+At minimum implement:
+
+1. Cache-aside pattern
+2. TTL
+3. Cache invalidation
+4. Rate limiting
+
+Example:
+
+GET /tasks/{id}
+
+Flow:
+
+API
+ |
+ v
+Redis
+ |
+ +-- CACHE HIT --> return
+ |
+ +-- CACHE MISS
+        |
+        v
+    PostgreSQL
+        |
+        v
+    Redis SET
+        |
+        v
+      return
+
+Explain:
+
+- why Redis is faster
+- what should be cached
+- what should NOT be cached
+- TTL
+- stale data
+- cache invalidation
+- cache stampede
+- Redis failure handling
+
+==================================================
+9. RABBITMQ
+==================================================
+
+Use RabbitMQ for asynchronous task processing.
+
+Example:
+
+POST /tasks/{id}/process
+
+The API should NOT perform the long-running operation synchronously.
+
+Instead:
+
+Client
+  |
+  v
+FastAPI
+  |
+  v
+RabbitMQ
+  |
+  v
+202 Accepted
+
+Then:
+
+RabbitMQ
+  |
+  +----> Worker 1
+  |
+  +----> Worker 2
+
+Teach:
+
+- producer
+- consumer
+- queue
+- exchange
+- routing key
+- acknowledgement
+- NACK
+- prefetch
+- retry
+- dead-letter queue
+- message durability
+- competing consumers
+- idempotency
+
+Explain WHY RabbitMQ is needed.
+
+==================================================
+10. CONCURRENCY
+==================================================
+
+Teach:
+
+- concurrency
+- parallelism
+- async/await
+- coroutine
+- event loop
+- threads
+- processes
+- worker concurrency
+
+Show how concurrency applies to:
+
+- FastAPI
+- RabbitMQ consumers
+- background workers
+
+Explain the difference between:
+
+concurrent execution
+vs
+parallel execution
+
+==================================================
+11. NGINX
+==================================================
+
+Use Nginx as:
+
+- reverse proxy
+- load balancer
+
+Final example:
+
+                NGINX
+              /   |   \
+             /    |    \
+          API1  API2  API3
+
+Explain:
+
+- reverse proxy
+- upstream
+- load balancing
+- round robin
+- health checks
+- connection handling
+- proxy timeout
+- request timeout
+- buffering
+- headers
+
+Show the actual Nginx configuration.
+
+Explain every configuration line.
+
+==================================================
+12. DISTRIBUTED SYSTEM
+==================================================
+
+The tutorial must explicitly teach distributed system concepts.
+
+Explain:
+
+- what a distributed system is
+- why multiple servers are needed
+- horizontal scaling
+- vertical scaling
+- stateless services
+- stateful services
+- service-to-service communication
+- network failure
+- partial failure
+- timeout
+- retry
+- exponential backoff
+- idempotency
+- fault tolerance
+- availability
+- reliability
+- consistency
+- eventual consistency
+- CAP theorem at an appropriate practical level
+
+Do not only explain theory.
+
+Demonstrate the concepts by intentionally breaking the system.
+
+For example:
+
+- kill API server 1
+- kill API server 2
+- kill a worker
+- stop Redis
+- stop RabbitMQ
+- stop PostgreSQL
+- introduce latency
+- restart containers
+
+Explain what happens in every case.
+
+==================================================
+13. MULTI-SERVER AWS DEPLOYMENT
+==================================================
+
+The project MUST eventually run across multiple EC2 instances.
+
+Example:
+
+EC2 #1
+- Nginx
+- API
+
+EC2 #2
+- API
+
+EC2 #3
+- Worker
+- RabbitMQ
+
+EC2 #4
+- Worker
+
+EC2 #5
+- PostgreSQL
+- Redis
+
+You may simplify or modify this architecture if there is a better learning-oriented AWS design.
+
+Explain:
+
+- why services are separated
+- which services can share a server
+- which should be isolated
+- network communication
+- private IP communication
+- security groups
+- resource sizing
+- cost considerations
+
+Do not pretend this is automatically highly available.
+
+Explicitly explain which components are still single points of failure.
+
+==================================================
+14. DOCKER
+==================================================
+
+Containerize the application.
+
+Teach:
+
+- Dockerfile
+- image
+- container
+- volume
+- network
+- environment variables
+- healthcheck
+- restart policy
+- Docker Compose
+
+Show:
+
+docker-compose.yml
+
+Explain every service.
+
+Explain how the architecture changes when moving from:
+
+local Docker Compose
+
+to
+
+multiple EC2 servers.
+
+==================================================
+15. OBSERVABILITY
+==================================================
+
+Implement:
+
+Prometheus
+    |
+    v
+Grafana
+
+Collect useful metrics such as:
+
+- request count
+- request latency
+- error rate
+- CPU usage
+- memory usage
+- worker throughput
+- RabbitMQ queue depth
+- Redis hit/miss
+- database connections
+
+Teach:
+
+- metrics
+- logs
+- traces
+- observability
+- monitoring
+- alerting
+
+Explain the difference between monitoring and observability.
+
+Create useful Grafana dashboards.
+
+==================================================
+16. LOAD TESTING
+==================================================
+
+Use k6 or Locust.
+
+Create tests for:
+
+- normal API traffic
+- high traffic
+- burst traffic
+- task submission
+- task processing
+
+Measure:
+
+- throughput
+- p50
+- p95
+- p99 latency
+- error rate
+- queue depth
+
+Run experiments:
+
+1 API server
+vs
+2 API servers
+vs
+3 API servers
+
+Explain the results.
+
+==================================================
+17. FAILURE TESTING
+==================================================
+
+Create a dedicated section called:
+
+"Breaking the System"
+
+Intentionally:
+
+- stop API server
+- stop worker
+- stop Redis
+- stop RabbitMQ
+- stop PostgreSQL
+- kill containers
+- exhaust CPU
+- exhaust memory
+- introduce network delay
+
+For each scenario explain:
+
+- What failed?
+- What does the user experience?
+- What component detects the failure?
+- What happens to existing requests?
+- What happens to queued messages?
+- Does the system recover?
+- What data can be lost?
+- How can production systems improve this?
+
+==================================================
+18. SECURITY
+==================================================
+
+Teach practical security:
+
+- SSH key authentication
+- Security Groups
+- Linux firewall
+- least privilege
+- IAM
+- secrets
+- environment variables
+- HTTPS
+- TLS certificates
+- JWT authentication
+- input validation
+- rate limiting
+- CORS
+- public vs private services
+
+Never expose PostgreSQL, Redis, or RabbitMQ publicly unless explicitly necessary.
+
+Explain:
+
+Security Group
+vs
+Linux firewall
+vs
+application-level security
+
+==================================================
+19. DNS + HTTPS
+==================================================
+
+Teach how to connect a domain to the EC2 infrastructure.
+
+Explain:
+
+DNS
+A record
+CNAME
+domain
+public IP
+Elastic IP
+
+Then configure HTTPS.
+
+Explain:
+
+HTTP
+HTTPS
+TLS
+certificate
+certificate renewal
+redirect HTTP -> HTTPS
+
+Show the exact configuration steps.
+
+==================================================
+20. IAM
+==================================================
+
+Teach:
+
+- IAM user
+- IAM role
+- policy
+- permissions
+- least privilege
+- access keys
+- AWS CLI
+
+Prefer IAM roles where appropriate.
+
+Explain why long-lived access keys should be avoided.
+
+==================================================
+21. CI/CD
+==================================================
+
+Implement:
+
+GitHub
+   |
+   v
+GitHub Actions
+   |
+   v
+Run tests
+   |
+   v
+Build Docker Image
+   |
+   v
+Push Docker Image to Container Registry
+   |
+   v
+Deploy to EC2
+   |
+   v
+Restart / update containers
+
+Use GitHub Actions.
+
+Use a container registry such as:
+
+- GitHub Container Registry
+OR
+- Amazon ECR
+
+Explain the trade-off and choose one.
+
+The pipeline should include:
+
+1. checkout
+2. install dependencies
+3. run linting
+4. run tests
+5. build Docker image
+6. tag image
+7. push image
+8. deploy
+9. health check
+
+Explain how rollback could work.
+
+==================================================
+22. PRODUCTION-STYLE CONFIGURATION
+==================================================
+
+The tutorial must show complete configuration examples.
+
+Include:
+
+- .env.example
+- Dockerfile
+- docker-compose.yml
+- Nginx configuration
+- RabbitMQ configuration
+- PostgreSQL configuration
+- Redis configuration
+- Prometheus configuration
+- Grafana setup
+- GitHub Actions workflow
+- systemd configuration if useful
+- firewall rules
+- AWS Security Group rules
+
+Do not omit configuration details with statements like:
+
+"configure this as needed."
+
+Provide actual example values and explain which values must be changed.
+
+Use placeholders for:
+
+- domain
+- AWS region
+- IP addresses
+- credentials
+- secrets
+- GitHub repository
+- registry
+
+==================================================
+23. AWS COST CONSIDERATION
+==================================================
+
+Because this is a learning project, explain cost-conscious deployment.
+
+Discuss:
+
+- EC2 instance sizing
+- number of instances
+- EBS
+- Elastic IP
+- NAT Gateway cost
+- data transfer
+- monitoring costs
+
+Provide a minimal-cost learning architecture and a more production-like architecture.
+
+Explicitly identify which AWS components are expensive and how to shut down resources after learning.
+
+==================================================
+24. PROJECT STRUCTURE
+==================================================
+
+Provide a complete repository structure.
+
+Example:
+
+distributed-task-platform/
+│
+├── app/
+│   ├── api/
+│   ├── services/
+│   ├── repositories/
+│   ├── models/
+│   ├── schemas/
+│   ├── workers/
+│   └── core/
+│
+├── tests/
+├── nginx/
+├── docker/
+├── monitoring/
+│   ├── prometheus/
+│   └── grafana/
+│
+├── .github/
+│   └── workflows/
+│
+├── Dockerfile
+├── docker-compose.yml
+├── requirements.txt
+├── .env.example
+└── README.md
+
+Explain every important directory.
+
+==================================================
+25. REQUIRED OUTPUT
+==================================================
+
+I want TWO major deliverables.
+
+DELIVERABLE 1:
+A complete HTML AWS + Distributed System tutorial.
+
+DELIVERABLE 2:
+A professional README.md explaining the project and infrastructure.
+
+==================================================
+DELIVERABLE 1 — HTML TUTORIAL
+==================================================
+
+Create a single self-contained HTML file.
+
+It should look like a polished technical learning document.
+
+Use:
+
+- HTML
+- CSS
+- JavaScript if useful
+- responsive design
+- sidebar/table of contents
+- collapsible sections
+- code blocks
+- copy buttons
+- architecture diagrams using HTML/CSS/SVG if appropriate
+- tables
+- warning/info/tip boxes
+- progress indicators if useful
+
+The HTML must be usable offline.
+
+The tutorial should teach the project from ZERO to DEPLOYED.
+
+The order should approximately be:
+
+1. Project Overview
+2. Architecture Overview
+3. Why Distributed System?
+4. Prerequisites
+5. Local Development
+6. FastAPI
+7. PostgreSQL
+8. Redis
+9. RabbitMQ
+10. Worker
+11. Docker
+12. Nginx
+13. Concurrency
+14. Distributed System Concepts
+15. AWS Account Preparation
+16. IAM
+17. VPC
+18. Subnets
+19. Security Groups
+20. EC2
+21. SSH
+22. Linux Administration
+23. Firewall
+24. Deploy Docker to EC2
+25. Multi-EC2 Architecture
+26. Private Networking
+27. Nginx Load Balancing
+28. DNS
+29. Elastic IP
+30. TLS / HTTPS
+31. Prometheus
+32. Grafana
+33. CI/CD
+34. GitHub Actions
+35. Container Registry
+36. Automated Deployment
+37. Load Testing
+38. Failure Testing
+39. Troubleshooting
+40. Cost Optimization
+41. Production Improvements
+42. Final Architecture
+43. What I Learned
+
+For EVERY major step, provide:
+
+- Goal
+- Why
+- Prerequisites
+- Exact steps
+- Commands
+- Configuration
+- Expected output
+- How to verify
+- Common errors
+- Troubleshooting
+- Architecture impact
+
+The tutorial must be detailed enough that a developer can follow it from a fresh AWS account and reach the final deployment.
+
+Do not skip AWS Console configuration.
+
+When AWS Console steps are required, explain:
+
+- what page to open
+- what option to choose
+- what value to enter
+- why that value is chosen
+- what security implication it has
+
+Also provide AWS CLI commands where useful.
+
+==================================================
+DELIVERABLE 2 — README.md
+==================================================
+
+Create a professional README for GitHub.
+
+Include:
+
+- project title
+- project description
+- learning objectives
+- architecture diagram
+- architecture explanation
+- technology stack
+- infrastructure
+- AWS architecture
+- networking
+- service responsibilities
+- request flow
+- asynchronous processing flow
+- caching flow
+- CI/CD flow
+- observability
+- failure handling
+- security
+- deployment overview
+- local development
+- AWS deployment overview
+- environment variables
+- API endpoints
+- load testing
+- lessons learned
+- trade-offs
+- limitations
+- future improvements
+- cost considerations
+
+The README should explain not only WHAT is used but WHY it is used.
+
+==================================================
+IMPORTANT LEARNING PHILOSOPHY
+==================================================
+
+Do not optimize this project for business functionality.
+
+Optimize it for understanding architecture.
+
+For every component, repeatedly answer:
+
+1. What problem does it solve?
+2. Why do we need it?
+3. What happens if we remove it?
+4. What happens if it fails?
+5. What does it cost?
+6. What complexity does it introduce?
+7. What alternative exists?
+8. Why was this technology chosen?
+
+The final project should help me understand:
+
+- backend engineering
+- modular architecture
+- REST
+- database
+- caching
+- message queues
+- asynchronous processing
+- concurrency
+- reverse proxy
+- load balancing
+- horizontal scaling
+- distributed systems
+- fault tolerance
+- reliability
+- networking
+- Linux
+- Docker
+- AWS
+- observability
+- CI/CD
+- security
+- load testing
+
+Do NOT assume that adding more technologies automatically makes the architecture better.
+
+Explicitly explain trade-offs and unnecessary complexity.
+
+The project should start simple and progressively evolve.
+
+The final result should demonstrate a clear progression:
+
+Single Server
+    ↓
+Modular Backend
+    ↓
+PostgreSQL
+    ↓
+Redis
+    ↓
+RabbitMQ
+    ↓
+Worker
+    ↓
+Docker
+    ↓
+Nginx
+    ↓
+Multiple API Servers
+    ↓
+Multiple Workers
+    ↓
+AWS EC2
+    ↓
+VPC / Subnets / Security Groups
+    ↓
+DNS / HTTPS
+    ↓
+Prometheus / Grafana
+    ↓
+GitHub Actions CI/CD
+    ↓
+Load Testing
+    ↓
+Failure Testing
+    ↓
+Production-oriented Distributed Architecture
+
+Make the final architecture realistic but still affordable and understandable for a solo developer learning AWS.
+
+The tutorial and README should be technically accurate, practical, and detailed.

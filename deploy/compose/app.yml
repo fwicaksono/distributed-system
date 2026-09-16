@@ -1,0 +1,30 @@
+# APP node (private subnet): api-2 and api-3, plus the one-off migration job.
+# Two API containers on one host = two upstream servers for Nginx, but ONE failure domain:
+# if this EC2 instance dies, both disappear together.
+
+name: taskplatform
+
+services:
+  api-2:
+    extends: { file: common.yml, service: app-base }
+    environment:
+      INSTANCE_ID: api-2
+      FORWARDED_ALLOW_IPS: ${EDGE_IP:?}   # trust X-Forwarded-For only from the edge node
+    ports: ["${PRIVATE_IP:?}:8000:8000"]
+
+  api-3:
+    extends: { file: common.yml, service: app-base }
+    environment:
+      INSTANCE_ID: api-3
+      FORWARDED_ALLOW_IPS: ${EDGE_IP:?}
+    ports: ["${PRIVATE_IP:?}:8001:8000"]
+
+  # deploy.sh runs this BEFORE rolling out new API/worker containers.
+  migrate:
+    extends: { file: common.yml, service: app-base }
+    profiles: ["migrate"]
+    command: ["alembic", "upgrade", "head"]
+    restart: "no"
+
+  node-exporter:
+    extends: { file: common.yml, service: node-exporter }

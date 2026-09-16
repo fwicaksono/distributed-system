@@ -1,0 +1,719 @@
+<!doctype html>
+<html lang="id">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Peta Arsitektur Task Platform</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Barlow+Condensed:wght@500;600;700&family=JetBrains+Mono:wght@400;600&family=Source+Serif+4:ital,opsz,wght@0,8..60,400;0,8..60,600;1,8..60,400&display=swap">
+<style>
+:root {
+  --ground: #EEF1EC;
+  --surface: #F8FAF6;
+  --sunken: #E2E7E0;
+  --grid: #D6DDD4;
+  --ink: #16211C;
+  --ink-soft: #46544C;
+  --ink-faint: #75827A;
+  --rule: #C9D1C8;
+  --amber: #B87A00;
+  --amber-fill: #F4E2B8;
+  --cobalt: #2F5DA8;
+  --cobalt-fill: #DCE5F4;
+  --moss: #3D7A4F;
+  --moss-fill: #D8EADB;
+  --brick: #B8432F;
+  --brick-fill: #F4DCD5;
+  --host: #FFFFFF;
+  --display: "Barlow Condensed", "Arial Narrow", "Roboto Condensed", system-ui, sans-serif;
+  --body: "Source Serif 4", "Iowan Old Style", Charter, Georgia, serif;
+  --mono: "JetBrains Mono", ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --ground: #101714; --surface: #16201B; --sunken: #0C120F; --grid: #1C2722;
+    --ink: #DCE5DF; --ink-soft: #A9B8AF; --ink-faint: #7C8C83; --rule: #2A3830;
+    --amber: #E8A93A; --amber-fill: #3A2E14; --cobalt: #86A8E6; --cobalt-fill: #1B2A44;
+    --moss: #7CC191; --moss-fill: #1A3222; --brick: #E58A76; --brick-fill: #3D1F19; --host: #1A2520;
+  }
+}
+:root[data-theme="dark"] {
+  --ground: #101714; --surface: #16201B; --sunken: #0C120F; --grid: #1C2722;
+  --ink: #DCE5DF; --ink-soft: #A9B8AF; --ink-faint: #7C8C83; --rule: #2A3830;
+  --amber: #E8A93A; --amber-fill: #3A2E14; --cobalt: #86A8E6; --cobalt-fill: #1B2A44;
+  --moss: #7CC191; --moss-fill: #1A3222; --brick: #E58A76; --brick-fill: #3D1F19; --host: #1A2520;
+}
+
+* { box-sizing: border-box; }
+body { margin: 0; background: var(--ground); color: var(--ink); font: 400 1.0625rem/1.6 var(--body); }
+a { color: var(--cobalt); text-underline-offset: 0.18em; }
+:focus-visible { outline: 2px solid var(--cobalt); outline-offset: 2px; }
+code { font-family: var(--mono); font-size: 0.85em; background: var(--sunken); padding: 0.06em 0.3em; border-radius: 3px; }
+h1, h2, h3 { text-wrap: balance; line-height: 1.1; margin: 0; }
+p { text-wrap: pretty; }
+.wrap { max-width: 78rem; margin: 0 auto; padding-inline: clamp(1rem, 3vw, 2rem); }
+
+/* ------------------------------------------------------------ bar */
+.bar { display: flex; align-items: center; justify-content: space-between; gap: 1rem; padding-block: 0.9rem; border-bottom: 1px solid var(--rule); flex-wrap: wrap; }
+.brand { font: 700 1rem/1 var(--display); letter-spacing: 0.08em; text-transform: uppercase; }
+.brand span { color: var(--amber); }
+.bar nav { display: flex; gap: 1.25rem; align-items: center; font: 600 0.85rem/1 var(--display); letter-spacing: 0.08em; text-transform: uppercase; flex-wrap: wrap; }
+.bar nav a { color: var(--ink-soft); text-decoration: none; }
+.bar nav a:hover { color: var(--ink); }
+.tbtn { font: 600 0.78rem/1 var(--display); letter-spacing: 0.08em; text-transform: uppercase; background: none; color: var(--ink); border: 1px solid var(--rule); border-radius: 4px; padding: 0.4rem 0.6rem; cursor: pointer; }
+
+/* ------------------------------------------------------------ opener */
+.opener { display: grid; grid-template-columns: minmax(0, 1.2fr) minmax(0, 1fr); gap: 1rem 3rem; align-items: end; padding-block: 2.25rem 1.5rem; }
+.eyebrow { font: 600 0.8rem/1 var(--display); letter-spacing: 0.16em; text-transform: uppercase; color: var(--amber); margin: 0 0 0.8rem; }
+.opener h1 { font: 700 clamp(2.3rem, 5vw, 3.6rem)/0.95 var(--display); }
+.opener p.lede { margin: 0; color: var(--ink-soft); font-size: 1.12rem; line-height: 1.5; max-width: 52ch; }
+@media (max-width: 820px) { .opener { grid-template-columns: 1fr; } }
+
+/* ------------------------------------------------------------ stage */
+.stage { display: grid; grid-template-columns: minmax(0, 1fr) 21rem; border: 1px solid var(--rule); border-radius: 8px; overflow: hidden; background: var(--surface); }
+@media (max-width: 1020px) { .stage { grid-template-columns: 1fr; } }
+.scenarios { grid-column: 1 / -1; display: flex; gap: 0; overflow-x: auto; border-bottom: 1px solid var(--rule); background: var(--ground); }
+.scenarios button {
+  flex: 0 0 auto; font: 600 0.85rem/1 var(--display); letter-spacing: 0.06em; text-transform: uppercase;
+  padding: 0.85rem 1rem; border: 0; border-right: 1px solid var(--rule); background: transparent; color: var(--ink-soft); cursor: pointer;
+  display: flex; gap: 0.5rem; align-items: center;
+}
+.scenarios button i { width: 0.6rem; height: 0.6rem; border-radius: 50%; background: var(--c, var(--amber)); display: inline-block; }
+.scenarios button[aria-selected="true"] { background: var(--surface); color: var(--ink); box-shadow: inset 0 -3px 0 var(--c, var(--amber)); }
+.canvas { overflow-x: auto; background-color: var(--sunken); background-image: radial-gradient(var(--grid) 1px, transparent 1px); background-size: 18px 18px; }
+.canvas svg { display: block; width: 100%; min-width: 760px; height: auto; }
+
+svg text { font-family: var(--mono); fill: var(--ink); }
+.zone-label { font-family: var(--display); font-weight: 600; letter-spacing: 0.08em; text-transform: uppercase; fill: var(--ink-faint); font-size: 12px; }
+.z-vpc { fill: none; stroke: var(--ink-soft); stroke-width: 1.4; }
+.z-public { fill: color-mix(in srgb, var(--amber-fill) 55%, transparent); stroke: var(--amber); stroke-dasharray: 6 4; }
+.z-private { fill: color-mix(in srgb, var(--cobalt-fill) 55%, transparent); stroke: var(--cobalt); stroke-dasharray: 6 4; }
+.z-aws { fill: color-mix(in srgb, var(--moss-fill) 45%, transparent); stroke: var(--moss); stroke-dasharray: 6 4; }
+.host { fill: var(--host); stroke: var(--rule); stroke-width: 1; }
+.host-label { font-size: 11px; fill: var(--ink-faint); }
+.node { cursor: pointer; }
+.node rect { fill: var(--surface); stroke: var(--ink); stroke-width: 1.3; transition: stroke 160ms, fill 160ms; }
+.node .n-title { font-family: var(--display); font-weight: 700; font-size: 15px; letter-spacing: 0.02em; }
+.node .n-sub { font-size: 10.5px; fill: var(--ink-faint); }
+.node:hover rect, .node:focus-visible rect { stroke: var(--cobalt); stroke-width: 2; }
+.node.selected rect { stroke: var(--cobalt); stroke-width: 2.4; fill: var(--cobalt-fill); }
+.node.active rect { stroke: var(--pc, var(--amber)); stroke-width: 2.6; fill: color-mix(in srgb, var(--pc, var(--amber)) 16%, var(--surface)); }
+.node.down rect { stroke: var(--brick); fill: var(--brick-fill); stroke-dasharray: 4 3; }
+.node.down .n-title { fill: var(--brick); }
+.node:focus { outline: none; }
+.route { fill: none; stroke-width: 2.4; stroke-linecap: round; stroke-linejoin: round; opacity: 0.9; }
+.packet { stroke: var(--surface); stroke-width: 2; }
+.pulse { fill: none; stroke-width: 2; }
+
+.narration { border-left: 1px solid var(--rule); display: flex; flex-direction: column; min-width: 0; grid-column: 2; grid-row: 2 / span 2; }
+.steps { position: relative; }
+@media (max-width: 1020px) { .narration { grid-column: 1; grid-row: auto; border-left: 0; border-top: 1px solid var(--rule); } }
+.narr-head { padding: 1rem 1.1rem 0.6rem; border-bottom: 1px solid var(--rule); }
+.narr-head h2 { font: 700 1.35rem/1.1 var(--display); }
+.narr-head p { margin: 0.35rem 0 0; font-size: 0.92rem; color: var(--ink-soft); line-height: 1.45; }
+.now { padding: 0.9rem 1.1rem; border-bottom: 1px solid var(--rule); min-height: 7.5rem; }
+.now .count { font: 600 0.75rem/1 var(--mono); color: var(--ink-faint); letter-spacing: 0.04em; font-variant-numeric: tabular-nums; }
+.now p { margin: 0.45rem 0 0; font-size: 0.98rem; line-height: 1.45; }
+.controls { display: flex; gap: 0.4rem; padding: 0.7rem 1.1rem; border-bottom: 1px solid var(--rule); align-items: center; flex-wrap: wrap; }
+.controls button { font: 600 0.8rem/1 var(--display); letter-spacing: 0.06em; text-transform: uppercase; border: 1px solid var(--rule); background: var(--surface); color: var(--ink); padding: 0.45rem 0.7rem; border-radius: 4px; cursor: pointer; }
+.controls button:hover { border-color: var(--ink-soft); }
+.controls label { margin-left: auto; font: 500 0.75rem var(--mono); color: var(--ink-faint); display: flex; gap: 0.4rem; align-items: center; }
+.steps { list-style: none; margin: 0; padding: 0.4rem 0; overflow-y: auto; max-height: 21rem; counter-reset: s; }
+.steps li { counter-increment: s; }
+.steps button { all: unset; box-sizing: border-box; display: grid; grid-template-columns: 1.6rem 1fr; gap: 0.3rem; width: 100%; padding: 0.35rem 1.1rem; font-size: 0.86rem; line-height: 1.35; color: var(--ink-soft); cursor: pointer; }
+.steps button::before { content: counter(s); font: 600 0.72rem/1.6 var(--mono); color: var(--ink-faint); }
+.steps button:hover { background: var(--sunken); }
+.steps button:focus-visible { outline: 2px solid var(--cobalt); outline-offset: -2px; }
+.steps li.done button { color: var(--ink-faint); }
+.steps li.current button { color: var(--ink); background: color-mix(in srgb, var(--sc, var(--amber)) 14%, transparent); box-shadow: inset 3px 0 0 var(--sc, var(--amber)); }
+
+.legend { display: flex; flex-wrap: wrap; gap: 0.4rem 1.2rem; padding: 0.7rem 1rem; font: 500 0.78rem var(--mono); color: var(--ink-soft); border-top: 1px solid var(--rule); grid-column: 1; background: var(--surface); }
+.legend span { display: inline-flex; align-items: center; gap: 0.4rem; }
+.legend i { width: 0.7rem; height: 0.7rem; border-radius: 50%; display: inline-block; }
+
+/* ------------------------------------------------------------ inspector */
+.inspector { display: grid; grid-template-columns: 14rem minmax(0, 1fr); gap: 0 2rem; margin-top: 1.25rem; padding: 1.1rem 1.25rem; border: 1px solid var(--rule); border-radius: 8px; background: var(--surface); }
+@media (max-width: 760px) { .inspector { grid-template-columns: 1fr; } }
+.inspector .tag { font: 600 0.75rem/1 var(--display); letter-spacing: 0.14em; text-transform: uppercase; color: var(--ink-faint); }
+.inspector h3 { font: 700 1.9rem/1 var(--display); margin: 0.4rem 0 0.35rem; }
+.inspector .where { font: 400 0.8rem/1.4 var(--mono); color: var(--ink-soft); }
+.inspector dl { display: grid; grid-template-columns: repeat(auto-fit, minmax(14rem, 1fr)); gap: 0.8rem 1.6rem; margin: 0; }
+.inspector dt { font: 600 0.72rem/1 var(--display); letter-spacing: 0.14em; text-transform: uppercase; color: var(--ink-faint); margin-bottom: 0.3rem; }
+.inspector dd { margin: 0; font-size: 0.95rem; line-height: 1.45; }
+.hint { font: 400 0.8rem var(--mono); color: var(--ink-faint); margin: 0.6rem 0 0; }
+
+/* ------------------------------------------------------------ sections */
+section.block { padding-block: 3.5rem 0.5rem; }
+.block-head { display: grid; grid-template-columns: 14rem minmax(0, 1fr); gap: 1rem 2rem; margin-bottom: 1.5rem; align-items: baseline; }
+@media (max-width: 760px) { .block-head { grid-template-columns: 1fr; } }
+.block-head .kicker { font: 600 0.8rem/1 var(--display); letter-spacing: 0.16em; text-transform: uppercase; color: var(--amber); }
+.block-head h2 { font: 700 clamp(1.8rem, 3.4vw, 2.5rem)/1 var(--display); }
+.cols { display: grid; grid-template-columns: 14rem minmax(0, 1fr); gap: 1rem 2rem; }
+@media (max-width: 760px) { .cols { grid-template-columns: 1fr; } }
+.cols > :first-child { color: var(--ink-faint); font: 400 0.85rem/1.5 var(--mono); }
+.prose { max-width: 66ch; }
+.prose p { margin: 0 0 1rem; }
+.two { display: grid; grid-template-columns: repeat(auto-fit, minmax(17rem, 1fr)); gap: 1.5rem 2.5rem; margin-top: 1rem; }
+.two h3 { font: 700 1.2rem/1.1 var(--display); letter-spacing: 0.02em; margin-bottom: 0.5rem; }
+.two ul { margin: 0; padding-left: 1.1rem; }
+.two li { margin-bottom: 0.3rem; }
+
+.table-wrap { overflow-x: auto; }
+table { border-collapse: collapse; width: 100%; font-size: 0.92rem; line-height: 1.4; }
+th { font: 600 0.74rem/1.2 var(--display); letter-spacing: 0.1em; text-transform: uppercase; color: var(--ink-faint); text-align: left; padding: 0.5rem 1rem 0.5rem 0; border-bottom: 2px solid var(--ink); white-space: nowrap; }
+td { padding: 0.6rem 1rem 0.6rem 0; border-bottom: 1px solid var(--rule); vertical-align: top; }
+td:first-child { font-family: var(--display); font-weight: 700; font-size: 1.02rem; white-space: nowrap; }
+.sev { display: inline-block; font: 600 0.7rem/1 var(--display); letter-spacing: 0.08em; text-transform: uppercase; padding: 0.25rem 0.45rem; border-radius: 3px; white-space: nowrap; }
+.sev.high { background: var(--brick-fill); color: var(--brick); }
+.sev.mid { background: var(--amber-fill); color: var(--amber); }
+.sev.low { background: var(--moss-fill); color: var(--moss); }
+
+.track { list-style: none; margin: 0; padding: 0 0 1rem; display: grid; grid-auto-flow: column; grid-auto-columns: minmax(13.5rem, 1fr); overflow-x: auto; border-top: 2px solid var(--ink); counter-reset: e; }
+.track li { counter-increment: e; padding: 0.9rem 1.1rem 0 0; position: relative; }
+.track li::before { content: counter(e, decimal-leading-zero); font: 600 0.75rem/1 var(--mono); color: var(--amber); display: block; margin-bottom: 0.45rem; }
+.track li::after { content: ""; position: absolute; top: -6px; left: 0; width: 10px; height: 10px; border-radius: 50%; background: var(--ground); border: 2px solid var(--ink); }
+.track h3 { font: 700 1.15rem/1.1 var(--display); margin-bottom: 0.35rem; }
+.track p { margin: 0; font-size: 0.88rem; line-height: 1.4; color: var(--ink-soft); }
+.track .cost { margin-top: 0.45rem; font: 400 0.76rem/1.35 var(--mono); color: var(--brick); }
+
+footer { margin-top: 4rem; padding-block: 1.5rem 3rem; border-top: 1px solid var(--rule); font: 400 0.82rem var(--mono); color: var(--ink-faint); display: flex; justify-content: space-between; gap: 1rem; flex-wrap: wrap; }
+
+@media (prefers-reduced-motion: reduce) { * { transition: none !important; } }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header class="bar">
+    <div class="brand">Task Platform <span>Peta Arsitektur</span></div>
+    <nav aria-label="Navigasi">
+      <a href="#tujuan">Tujuan</a>
+      <a href="#komponen">Komponen</a>
+      <a href="#evolusi">Evolusi</a>
+      <a href="#batas">Batas</a>
+      <a href="tutorial.html">Tutorial</a>
+      <button class="tbtn" type="button" id="theme-toggle" aria-label="Ganti mode gelap/terang">Tema</button>
+    </nav>
+  </header>
+
+  <div class="opener">
+    <div>
+      <p class="eyebrow">Distributed system di AWS EC2</p>
+      <h1>Satu task, sebelas proses, lima server</h1>
+    </div>
+    <p class="lede">API-nya sengaja sederhana: buat task, proses di background, cek statusnya. Yang dipelajari adalah perjalanan request itu — melewati DNS, TLS, load balancer, cache, queue, worker, dan database — serta apa yang terjadi saat salah satunya rusak. Pilih skenario, lalu amati.</p>
+  </div>
+
+  <div class="stage" id="stage">
+    <div class="scenarios" role="tablist" aria-label="Skenario" id="scenario-tabs"></div>
+    <div class="canvas">
+      <svg id="map" viewBox="0 0 1000 660" role="img" aria-labelledby="map-title">
+        <title id="map-title">Diagram arsitektur: node edge di public subnet, node app, broker, ops, dan data di private subnet, serta layanan AWS dan GitHub di luar VPC.</title>
+        <defs>
+          <filter id="glow" x="-50%" y="-50%" width="200%" height="200%"><feGaussianBlur stdDeviation="3" result="b"/><feMerge><feMergeNode in="b"/><feMergeNode in="SourceGraphic"/></feMerge></filter>
+        </defs>
+        <g id="zones">
+          <text x="24" y="26" class="zone-label">Internet</text>
+          <rect x="560" y="12" width="424" height="88" rx="8" class="z-aws"/>
+          <text x="574" y="30" class="zone-label">AWS &amp; GitHub · di luar VPC</text>
+          <rect x="16" y="116" width="968" height="530" rx="10" class="z-vpc"/>
+          <text x="30" y="136" class="zone-label">VPC 10.20.0.0/16 · ap-southeast-1a</text>
+          <rect x="32" y="146" width="936" height="126" rx="8" class="z-public"/>
+          <text x="46" y="164" class="zone-label">Public subnet 10.20.1.0/24 · 0.0.0.0/0 → Internet Gateway</text>
+          <rect x="32" y="290" width="936" height="340" rx="8" class="z-private"/>
+          <text x="46" y="308" class="zone-label">Private subnet 10.20.11.0/24 · 0.0.0.0/0 → NAT · tanpa jalur masuk</text>
+        </g>
+        <g id="hosts"></g>
+        <g id="routes"></g>
+        <g id="nodes"></g>
+        <g id="packets"></g>
+      </svg>
+    </div>
+    <aside class="narration" aria-live="polite">
+      <div class="narr-head">
+        <h2 id="sc-title">—</h2>
+        <p id="sc-desc"></p>
+      </div>
+      <div class="now">
+        <span class="count" id="step-count">Langkah 0 / 0</span>
+        <p id="step-text"></p>
+      </div>
+      <div class="controls">
+        <button type="button" id="btn-prev" aria-label="Langkah sebelumnya">◀ Mundur</button>
+        <button type="button" id="btn-play">Jeda</button>
+        <button type="button" id="btn-next" aria-label="Langkah berikutnya">Maju ▶</button>
+        <label for="speed">Kecepatan
+          <select id="speed">
+            <option value="0.6">0,6×</option>
+            <option value="1" selected>1×</option>
+            <option value="1.6">1,6×</option>
+          </select>
+        </label>
+      </div>
+      <ol class="steps" id="step-list"></ol>
+    </aside>
+    <div class="legend" aria-label="Legenda warna">
+      <span><i style="background:var(--amber)"></i>Traffic user (HTTP)</span>
+      <span><i style="background:var(--cobalt)"></i>Message / data</span>
+      <span><i style="background:var(--moss)"></i>Operasional: deploy, metrics</span>
+      <span><i style="background:var(--brick)"></i>Kegagalan</span>
+    </div>
+  </div>
+
+  <div class="inspector" id="inspector" aria-live="polite">
+    <div>
+      <span class="tag" id="ins-tag">Komponen</span>
+      <h3 id="ins-name">Nginx</h3>
+      <div class="where" id="ins-where"></div>
+      <p class="hint">Klik node mana pun di diagram untuk melihat detailnya.</p>
+    </div>
+    <dl>
+      <div><dt>Peran</dt><dd id="ins-role"></dd></div>
+      <div><dt>Kenapa ada</dt><dd id="ins-why"></dd></div>
+      <div><dt>Jika gagal</dt><dd id="ins-fail"></dd></div>
+      <div><dt>Alternatif</dt><dd id="ins-alt"></dd></div>
+    </dl>
+  </div>
+
+  <section class="block" id="tujuan">
+    <div class="block-head"><span class="kicker">Tujuan proyek</span><h2>Mengoptimalkan pemahaman, bukan fitur</h2></div>
+    <div class="cols">
+      <div>Domain bisnis dikunci sejak awal: users, tasks, task_results, task_logs.</div>
+      <div class="prose">
+        <p>Proyek ini adalah lab arsitektur. Logika bisnisnya cukup kecil untuk dipahami dalam lima menit, supaya seluruh perhatian tertuju pada pertanyaan yang sebenarnya penting di sistem nyata: <strong>masalah apa yang diselesaikan setiap komponen, apa yang terjadi jika komponen itu dihapus, apa yang terjadi jika gagal, dan berapa harganya.</strong></p>
+        <p>Sistem ini tumbuh bertahap dari satu proses FastAPI menjadi lima EC2 instance di private network, dan setiap penambahan harus dibenarkan oleh masalah yang terukur. Hasil akhirnya realistis tapi tetap terjangkau untuk satu developer — dan jujur soal bagian yang belum highly available.</p>
+        <div class="two">
+          <div>
+            <h3>Yang dilatih</h3>
+            <ul>
+              <li>Backend modular: layer, dependency injection, validasi, error contract</li>
+              <li>PostgreSQL: transaction, index, compare-and-set, migration</li>
+              <li>Redis: cache-aside, TTL, invalidation, stampede, rate limiting</li>
+              <li>RabbitMQ: ack/nack, prefetch, retry queue, dead-letter, idempotency</li>
+              <li>Jaringan AWS: VPC, subnet, route table, NAT, Security Group, DNS, TLS</li>
+              <li>Operasional: Linux, Docker, Prometheus, Grafana, CI/CD, load &amp; chaos testing</li>
+            </ul>
+          </div>
+          <div>
+            <h3>Yang sengaja bukan tujuan</h3>
+            <ul>
+              <li>Fitur bisnis yang kaya — domainnya tidak akan bertambah</li>
+              <li>High availability multi-AZ — dibahas, tidak dibangun, demi biaya</li>
+              <li>Kubernetes — Compose per host lebih transparan untuk belajar</li>
+              <li>Menambah teknologi tanpa alasan — setiap komponen harus lulus delapan pertanyaan</li>
+            </ul>
+          </div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <section class="block" id="komponen">
+    <div class="block-head"><span class="kicker">Komponen</span><h2>Siapa melakukan apa, dan di mana</h2></div>
+    <div class="table-wrap">
+      <table>
+        <thead><tr><th>Komponen</th><th>Host · port</th><th>Tanggung jawab</th><th>State</th><th>Di-scale dengan</th></tr></thead>
+        <tbody id="component-rows"></tbody>
+      </table>
+    </div>
+  </section>
+
+  <section class="block" id="evolusi">
+    <div class="block-head"><span class="kicker">Evolusi</span><h2>Setiap langkah membeli sesuatu, dan membayar sesuatu</h2></div>
+    <ol class="track">
+      <li><h3>Single server</h3><p>Satu proses FastAPI menjawab request.</p><p class="cost">Data hilang saat restart</p></li>
+      <li><h3>Modular backend</h3><p>Route, service, repository dipisah; dependency injection.</p><p class="cost">Indirection</p></li>
+      <li><h3>PostgreSQL</h3><p>Source of truth dengan constraint dan transaction.</p><p class="cost">Batas koneksi, migration</p></li>
+      <li><h3>Redis</h3><p>Cache-aside untuk read, counter rate limit bersama.</p><p class="cost">Stale data, invalidation</p></li>
+      <li><h3>RabbitMQ + worker</h3><p>Pekerjaan lama keluar dari request; 202 Accepted.</p><p class="cost">Duplikat, dual write</p></li>
+      <li><h3>Docker</h3><p>Satu image immutable dari laptop sampai EC2.</p><p class="cost">Keanehan network/firewall</p></li>
+      <li><h3>Nginx + replika</h3><p>3 API, 2 worker, load balancing round robin.</p><p class="cost">Proxy header, health check</p></li>
+      <li><h3>VPC &amp; 5 EC2</h3><p>Public/private subnet, NAT, Security Group per role.</p><p class="cost">Partial failure, SPOF bertambah</p></li>
+      <li><h3>DNS + HTTPS</h3><p>Elastic IP, Let’s Encrypt, redirect, HSTS.</p><p class="cost">Renewal, rate limit</p></li>
+      <li><h3>Prometheus + Grafana</h3><p>Metrics dari 11 proses, alert berbasis gejala.</p><p class="cost">Cardinality</p></li>
+      <li><h3>CI/CD</h3><p>GitHub Actions → ECR → SSM, rolling deploy, rollback.</p><p class="cost">Pipeline jadi infrastruktur kritis</p></li>
+      <li><h3>Load &amp; chaos test</h3><p>k6 1 vs 2 vs 3 API; merusak setiap komponen.</p><p class="cost">Semua celah jadi terlihat</p></li>
+    </ol>
+  </section>
+
+  <section class="block" id="batas">
+    <div class="block-head"><span class="kicker">Batas kejujuran</span><h2>Lebih banyak server ≠ highly available</h2></div>
+    <div class="table-wrap">
+      <table>
+        <thead><tr><th>Komponen</th><th>Dampak jika gagal</th><th>Tingkat</th><th>Perbaikan di production</th></tr></thead>
+        <tbody>
+          <tr><td>Node edge</td><td>Outage total: satu-satunya pintu masuk (Nginx + Elastic IP)</td><td><span class="sev high">Total</span></td><td>ALB di 2 AZ + Auto Scaling Group</td></tr>
+          <tr><td>Node data</td><td>Hampir semua endpoint gagal; data ter-commit aman di disk, tanpa backup otomatis</td><td><span class="sev high">Total</span></td><td>RDS Multi-AZ, ElastiCache replica, backup PITR</td></tr>
+          <tr><td>Node broker</td><td>Submit task mengembalikan 503; read tetap jalan; message durable selamat</td><td><span class="sev mid">Sebagian</span></td><td>Cluster RabbitMQ + quorum queue, atau SQS</td></tr>
+          <tr><td>Node app</td><td>2 dari 3 API hilang; api-1 menanggung semua beban</td><td><span class="sev mid">Sebagian</span></td><td>Lebih banyak node, tersebar di beberapa AZ</td></tr>
+          <tr><td>NAT instance</td><td>Deploy dan update gagal; traffic live tidak terpengaruh</td><td><span class="sev low">Kontrol</span></td><td>NAT Gateway per AZ, VPC endpoint</td></tr>
+          <tr><td>Satu worker</td><td>Throughput turun; message di-requeue ke worker lain</td><td><span class="sev low">Kapasitas</span></td><td>Autoscaling consumer berdasarkan queue depth</td></tr>
+        </tbody>
+      </table>
+    </div>
+  </section>
+
+  <footer>
+    <span>docs/architecture.html · bagian dari repository distributed-task-platform</span>
+    <span><a href="tutorial.html">Tutorial lengkap 43 langkah →</a></span>
+  </footer>
+</div>
+
+<script>
+(() => {
+  // ---------------------------------------------------------------- data
+  const NODES = {
+    client:   { x: 40,  y: 40,  w: 140, h: 50, title: "Client", sub: "browser / k6" },
+    dns:      { x: 220, y: 40,  w: 130, h: 50, title: "DNS", sub: "api.example.com" },
+    github:   { x: 580, y: 40,  w: 130, h: 50, title: "GitHub Actions", sub: "CI/CD · OIDC" },
+    ecr:      { x: 722, y: 40,  w: 110, h: 50, title: "ECR", sub: "image registry" },
+    ssm:      { x: 844, y: 40,  w: 126, h: 50, title: "SSM", sub: "Run Cmd · Params" },
+    nginx:    { x: 80,  y: 196, w: 150, h: 56, title: "Nginx", sub: ":443 TLS · LB" },
+    api1:     { x: 244, y: 196, w: 110, h: 56, title: "api-1", sub: ":8000" },
+    nat:      { x: 800, y: 196, w: 150, h: 56, title: "NAT", sub: "t4g.nano · EIP" },
+    api2:     { x: 66,  y: 350, w: 104, h: 56, title: "api-2", sub: ":8000" },
+    api3:     { x: 182, y: 350, w: 104, h: 56, title: "api-3", sub: ":8001" },
+    rabbit:   { x: 352, y: 350, w: 138, h: 56, title: "RabbitMQ", sub: ":5672 durable" },
+    worker1:  { x: 502, y: 350, w: 104, h: 56, title: "worker-1", sub: "prefetch 4" },
+    worker2:  { x: 670, y: 350, w: 96,  h: 56, title: "worker-2", sub: "prefetch 4" },
+    prom:     { x: 776, y: 350, w: 92,  h: 56, title: "Prometheus", sub: ":9090" },
+    grafana:  { x: 878, y: 350, w: 76,  h: 56, title: "Grafana", sub: ":3000" },
+    postgres: { x: 240, y: 530, w: 200, h: 62, title: "PostgreSQL", sub: ":5432 source of truth" },
+    redis:    { x: 460, y: 530, w: 200, h: 62, title: "Redis", sub: ":6379 cache · rate limit" },
+  };
+  const HOSTS = [
+    { x: 60,  y: 176, w: 310, h: 88,  label: "edge · 10.20.1.10 · sg-edge" },
+    { x: 52,  y: 330, w: 246, h: 88,  label: "app · 10.20.11.20 · sg-app" },
+    { x: 340, y: 330, w: 278, h: 88,  label: "broker · 10.20.11.30 · sg-broker" },
+    { x: 656, y: 330, w: 306, h: 88,  label: "ops · 10.20.11.40 · sg-ops" },
+    { x: 226, y: 510, w: 448, h: 96,  label: "data · 10.20.11.50 · sg-data · /data di EBS terpisah" },
+  ];
+  const INFO = {
+    client:   { tag: "Di luar sistem", where: "Internet", role: "Mengirim HTTPS request dan melakukan polling status task.", why: "Titik awal setiap alur; k6 berperan sebagai client saat load test.", fail: "—", alt: "—" },
+    dns:      { tag: "Jaringan", where: "Registrar / Route 53 · A record → Elastic IP", role: "Menerjemahkan api.example.com ke Elastic IP node edge.", why: "Sertifikat TLS terikat ke nama; client tidak boleh meng-hard-code IP.", fail: "Client tidak bisa menemukan server sama sekali, meski semua server sehat.", alt: "Route 53 Alias record ke ALB." },
+    github:   { tag: "CI/CD", where: "GitHub · .github/workflows/pipeline.yml", role: "Lint, test, build image, push ke ECR, deploy lewat SSM, verifikasi publik.", why: "Deploy yang bisa diulang, diaudit, dan di-rollback — tanpa access key AWS (OIDC).", fail: "Tidak bisa deploy; sistem yang sedang berjalan tidak terpengaruh.", alt: "GitLab CI, AWS CodePipeline." },
+    ecr:      { tag: "AWS", where: "Amazon ECR · tag immutable = git SHA", role: "Menyimpan image release; host melakukan pull dengan instance role.", why: "Artifact immutable membuat rollback sekadar ‘deploy tag lama’.", fail: "Deploy baru gagal; container yang sudah jalan tidak terpengaruh.", alt: "GitHub Container Registry (butuh token di setiap host)." },
+    ssm:      { tag: "AWS", where: "Systems Manager · Run Command, Session Manager, Parameter Store", role: "Mengirim script deploy ke host tanpa SSH; menyimpan secret terenkripsi KMS.", why: "Tidak ada port inbound atau key yang disimpan; semua akses tercatat di CloudTrail.", fail: "Deploy dan render secret gagal; traffic live tidak terpengaruh.", alt: "SSH dari CI (butuh port 22 terbuka), Secrets Manager." },
+    nginx:    { tag: "Stateless · edge", where: "edge · :80 :443 · nginx/templates/edge-https.conf.template", role: "TLS termination, reverse proxy, round robin ke 3 API, passive health check, limit_req.", why: "Satu pintu masuk; server di belakangnya bisa datang dan pergi tanpa client tahu.", fail: "Outage total — ini single point of failure utama.", alt: "AWS ALB (multi-AZ, managed), HAProxy, Caddy." },
+    api1:     { tag: "Stateless · API", where: "edge · :8000 (private IP) · app/main.py", role: "Kontrak HTTP, auth JWT, validasi, orkestrasi DB/cache/queue.", why: "Stateless: bisa diganti dan ditambah; berbagi host dengan Nginx untuk hemat biaya.", fail: "Nginx me-retry GET ke api-2/api-3; kapasitas turun sepertiga.", alt: "Container di ECS Fargate." },
+    api2:     { tag: "Stateless · API", where: "app · 10.20.11.20:8000", role: "Replika API kedua, dijangkau Nginx lewat private IP.", why: "Horizontal scaling dan fault isolation dari host edge.", fail: "Passive failover di Nginx; mati bersama api-3 jika host app mati.", alt: "Auto Scaling Group di beberapa AZ." },
+    api3:     { tag: "Stateless · API", where: "app · 10.20.11.20:8001", role: "Replika API ketiga di host yang sama dengan api-2.", why: "Menunjukkan bahwa dua upstream bisa berbagi satu failure domain.", fail: "Seperti api-2; kombinasi keduanya = kehilangan 2/3 kapasitas.", alt: "Sebar replika ke host dan AZ berbeda." },
+    nat:      { tag: "Jaringan", where: "public subnet · 10.20.1.20 · iptables MASQUERADE", role: "Akses internet keluar untuk private subnet: apt, SSM agent, ECR API.", why: "Instance privat tetap tidak bisa dijangkau dari luar, tapi bisa update dan deploy.", fail: "Deploy dan update gagal; traffic user tidak terpengaruh.", alt: "NAT Gateway (~$33/bulan + per GB), VPC interface endpoint." },
+    rabbit:   { tag: "Stateful · broker", where: "broker · 10.20.11.30:5672 · app/core/rabbitmq.py", role: "Buffer durable antara ‘diterima’ dan ‘selesai’; retry queue 5/30/120 dtk; dead-letter queue.", why: "Pekerjaan lama keluar dari request; lonjakan diserap; crash worker tidak menghilangkan pekerjaan.", fail: "POST /process → 503 dan task ditandai failed; read tetap jalan; message durable selamat.", alt: "Amazon SQS, Kafka, tabel PostgreSQL + SKIP LOCKED." },
+    worker1:  { tag: "Stateless · worker", where: "broker · metrics :9101 · app/workers/consumer.py", role: "Consume message, claim task dengan lease, kerjakan, simpan hasil, ack setelah commit.", why: "Competing consumers: throughput bertambah dengan menambah worker.", fail: "Message unacked di-requeue ke worker-2; task yang sudah di-claim diambil ulang setelah lease habis.", alt: "Celery, Dramatiq, Lambda + SQS." },
+    worker2:  { tag: "Stateless · worker", where: "ops · Docker network ke Prometheus", role: "Consumer kedua di host yang berbeda dari broker.", why: "Membuktikan consumer bekerja lintas host lewat private network.", fail: "Seperti worker-1; queue dikuras dengan kecepatan setengah.", alt: "Autoscaling berdasarkan queue depth." },
+    prom:     { tag: "Stateful · observability", where: "ops · 127.0.0.1:9090 · monitoring/prometheus/prometheus.aws.yml", role: "Scrape metrics dari semua node tiap 15 dtk; evaluasi alert rule.", why: "Lima host tidak bisa dipantau dengan SSH; up==0 mendeteksi target yang hilang.", fail: "Buta sementara; sistem tetap melayani user.", alt: "Amazon Managed Prometheus, CloudWatch, Datadog." },
+    grafana:  { tag: "Observability", where: "ops · 127.0.0.1:3000 · dashboard as code", role: "Dashboard API Overview, Workers & Queue, Infrastructure.", why: "Menjawab ‘sehat atau tidak?’ dalam lima detik.", fail: "Tidak ada grafik; data tetap tersimpan di Prometheus.", alt: "Amazon Managed Grafana." },
+    postgres: { tag: "Stateful · data", where: "data · 10.20.11.50:5432 · migrations/", role: "Menyimpan users, tasks, results, logs dengan constraint dan transaction.", why: "Satu-satunya source of truth; semua penyimpanan lain bisa dibangun ulang darinya.", fail: "Hampir semua endpoint gagal; worker nack + requeue; data ter-commit aman.", alt: "Amazon RDS Multi-AZ, Aurora." },
+    redis:    { tag: "Disposable · cache", where: "data · 10.20.11.50:6379 · maxmemory 256 MB", role: "Cache-aside untuk GET task (TTL 60 dtk + jitter) dan counter rate limit bersama.", why: "Mengurangi beban database; counter harus di luar proses karena ada 3 API.", fail: "Fail-open: lebih lambat, rate limit nonaktif, tidak ada error untuk user.", alt: "ElastiCache, Memcached, cache in-process (tidak dibagi)." },
+  };
+  const COLOR = { user: "var(--amber)", msg: "var(--cobalt)", ops: "var(--moss)", fail: "var(--brick)" };
+
+  const SCENARIOS = [
+    { id: "read", name: "Request baca", color: COLOR.user,
+      desc: "GET /api/v1/tasks/{id} — perjalanan sinkron dari client ke database dan kembali, dengan cache-aside Redis.",
+      steps: [
+        { path: ["client", "dns"], c: "user", text: "Client me-resolve api.example.com. DNS mengembalikan Elastic IP milik node edge." },
+        { path: ["client", "nginx"], c: "user", text: "HTTPS ke port 443 masuk lewat Internet Gateway. sg-edge mengizinkan 443 dari mana saja; Nginx melakukan TLS termination dan menambahkan X-Request-ID." },
+        { path: ["nginx", "api2"], c: "user", text: "Round robin memilih api-2 di private IP 10.20.11.20:8000. sg-app hanya menerima sumber yang membawa sg-edge." },
+        { path: ["api2", "redis"], c: "msg", text: "api-2 menaikkan counter rate limit (INCR) lalu GET task:v1:<id> di Redis — cache MISS." },
+        { path: ["api2", "postgres"], c: "msg", text: "Fallback ke PostgreSQL: SELECT berdasarkan primary key, lewat connection pool (tanpa handshake baru)." },
+        { path: ["api2", "redis"], c: "msg", text: "Hasilnya disimpan ke Redis dengan TTL 60 detik + jitter. Request berikutnya akan cache HIT (~0,3 ms)." },
+        { path: ["api2", "nginx", "client"], c: "user", text: "Response 200 kembali lewat Nginx. Header X-Request-ID yang sama muncul di log Nginx dan log api-2." },
+      ] },
+    { id: "async", name: "Proses task async", color: COLOR.msg,
+      desc: "POST /api/v1/tasks/{id}/process — API menjawab 202 dalam milidetik; pekerjaan dilakukan worker di host lain.",
+      steps: [
+        { path: ["client", "nginx", "api3"], c: "user", text: "POST /process tiba di api-3 lewat Nginx." },
+        { path: ["api3", "postgres"], c: "msg", text: "UPDATE status='queued' WHERE status IN ('pending','failed') — compare-and-set atomik, lalu COMMIT. Klik ganda di dua API tetap menghasilkan satu antrean." },
+        { path: ["api3", "rabbit"], c: "msg", text: "Publish message persistent ke exchange tasks dengan publisher confirm: RabbitMQ sudah menyimpannya sebelum API menjawab." },
+        { path: ["api3", "nginx", "client"], c: "user", text: "202 Accepted + Location ke URL status. Artinya ‘sudah diterima’, bukan ‘sudah selesai’." },
+        { path: ["rabbit", "worker2"], c: "msg", text: "Competing consumers: worker-2 di node ops menerima message (maksimal 4 unacked per worker berkat prefetch)." },
+        { path: ["worker2", "postgres"], c: "msg", text: "claim(): status → processing dengan lease 60 detik. Jika message ini duplikat, claim gagal dan message dilewati." },
+        { pulse: "worker2", c: "msg", text: "worker-2 mengerjakan task: asyncio untuk I/O-bound, process pool untuk CPU-bound." },
+        { path: ["worker2", "postgres"], c: "msg", text: "INSERT task_results ON CONFLICT DO NOTHING, status completed, COMMIT." },
+        { path: ["worker2", "redis"], c: "msg", text: "DEL task:v1:<id> — cache invalidation setelah commit, supaya read berikutnya melihat status baru." },
+        { path: ["worker2", "rabbit"], c: "msg", text: "ACK dikirim setelah commit. Baru sekarang message dihapus dari queue — crash sebelum ini berarti redelivery, bukan kehilangan." },
+      ] },
+    { id: "retry", name: "Retry & dead-letter", color: COLOR.fail,
+      desc: "Error sementara dikirim ke retry queue dengan delay bertingkat; setelah tiga kali gagal, message berakhir di dead-letter queue.",
+      steps: [
+        { path: ["rabbit", "worker1"], c: "msg", text: "worker-1 menerima message dan meng-claim task." },
+        { pulse: "worker1", c: "fail", text: "Pekerjaan gagal dengan error sementara (misalnya timeout ke dependency)." },
+        { path: ["worker1", "rabbit"], c: "fail", text: "Status dikembalikan ke queued, copy message di-publish ke tasks.retry.1 (TTL 5 detik), lalu message asli di-ACK." },
+        { pulse: "rabbit", c: "msg", text: "Retry queue tidak punya consumer. Saat TTL habis, RabbitMQ me-dead-letter message kembali ke tasks.process." },
+        { path: ["rabbit", "worker1"], c: "msg", text: "Percobaan berikutnya. Jika gagal lagi: tasks.retry.2 (30 dtk), lalu tasks.retry.3 (120 dtk)." },
+        { path: ["worker1", "postgres"], c: "fail", text: "Retry habis: status failed dengan last_error dan task_log tercatat." },
+        { path: ["worker1", "rabbit"], c: "fail", text: "NACK tanpa requeue → exchange tasks.dlx → tasks.dead-letter. Alert DeadLetterQueueNotEmpty menyala untuk diperiksa manusia." },
+      ] },
+    { id: "failover", name: "Failover: api-2 mati", color: COLOR.fail,
+      desc: "Satu API server hilang di tengah traffic. Nginx me-retry request idempotent ke server berikutnya.",
+      steps: [
+        { down: ["api2"], pulse: "api2", c: "fail", text: "Container api-2 berhenti (crash, deploy, atau host bermasalah)." },
+        { path: ["client", "nginx"], c: "user", text: "GET baru tiba di Nginx." },
+        { path: ["nginx", "api2"], c: "fail", fail: true, text: "Round robin memilih api-2: connect() failed (111: Connection refused). Refused berarti host ada tapi tidak ada yang listen." },
+        { path: ["nginx", "api3"], c: "user", text: "proxy_next_upstream: request GET yang sama dikirim ke api-3. POST tidak di-retry, karena bisa tereksekusi dua kali." },
+        { path: ["api3", "nginx", "client"], c: "user", text: "200 OK — user tidak merasakan apa-apa, hanya tambahan latency beberapa milidetik." },
+        { pulse: "nginx", c: "fail", text: "Setelah 3 kegagalan dalam 10 detik, api-2 dikeluarkan dari rotasi selama 10 detik. Prometheus menandai up==0 dan TargetDown menyala setelah 1 menit." },
+        { up: ["api2"], pulse: "api2", c: "user", text: "api-2 kembali (restart policy / deploy selesai) dan otomatis masuk lagi ke rotasi setelah fail_timeout." },
+      ] },
+    { id: "deploy", name: "Deploy CI/CD", color: COLOR.ops,
+      desc: "Push ke main: test, build image, push ke ECR, rolling deploy lewat SSM, dan verifikasi dari luar.",
+      steps: [
+        { pulse: "github", c: "ops", text: "Push ke main: ruff, mypy, unit test, integration test dengan PostgreSQL/Redis/RabbitMQ asli." },
+        { path: ["github", "ecr"], c: "ops", text: "GitHub Actions meng-assume IAM role lewat OIDC (tanpa access key), build image, push dengan tag git SHA yang immutable." },
+        { path: ["github", "ssm"], c: "ops", text: "SSM Run Command dikirim per role secara berurutan: migrate → broker → ops → app → edge." },
+        { path: ["ssm", "nat", "api2"], c: "ops", text: "Agent SSM di node app menerima script lewat koneksi keluar (melalui NAT). Tidak ada port inbound yang dibuka." },
+        { path: ["ecr", "nat", "api2"], c: "ops", text: "Host login ke ECR dengan instance role, pull image, mengekstrak bundle konfigurasi, dan me-render secret dari Parameter Store." },
+        { pulse: "api2", c: "ops", text: "Rolling update: api-2 dibuat ulang dan harus healthy dulu, baru api-3. Nginx mengarahkan traffic ke replika yang tersisa." },
+        { pulse: "api3", c: "ops", text: "Health check /health/ready. Jika gagal, deploy.sh otomatis rollback ke release sebelumnya dan pipeline berhenti." },
+        { path: ["github", "dns", "nginx"], c: "ops", text: "Verifikasi terakhir dari luar: lewat DNS, TLS, dan Nginx, setiap instance harus melaporkan versi baru." },
+      ] },
+    { id: "observe", name: "Monitoring", color: COLOR.ops,
+      desc: "Prometheus menarik metrics dari setiap node lewat private network; Grafana membacanya.",
+      steps: [
+        { path: ["prom", "api1"], c: "ops", text: "Scrape api-1 di 10.20.1.10:8000/metrics: request count, latency histogram per route template, DB pool." },
+        { path: ["prom", "api3"], c: "ops", text: "Scrape api-2 dan api-3. sg-app mengizinkan port 8000–8001 dari sg-ops." },
+        { path: ["prom", "rabbit"], c: "ops", text: "Scrape RabbitMQ :15692 — queue depth per queue, termasuk retry dan dead-letter queue." },
+        { path: ["prom", "worker1"], c: "ops", text: "Scrape worker-1 :9101 — throughput per outcome, durasi task, task in-flight." },
+        { path: ["prom", "postgres"], c: "ops", text: "Scrape postgres-exporter dan redis-exporter di node data: koneksi, TPS, memori, hit/miss." },
+        { pulse: "prom", c: "ops", text: "Alert rule dievaluasi setiap 15 detik: error rate, p95, backlog, no consumer, disk, memori." },
+        { path: ["grafana", "prom"], c: "ops", text: "Grafana menjalankan query PromQL. Diakses lewat SSH/SSM port forwarding — tidak ada dashboard publik." },
+      ] },
+  ];
+
+  // ---------------------------------------------------------------- svg build
+  const NS = "http://www.w3.org/2000/svg";
+  const el = (tag, attrs = {}, parent) => {
+    const n = document.createElementNS(NS, tag);
+    for (const [k, v] of Object.entries(attrs)) n.setAttribute(k, v);
+    if (parent) parent.appendChild(n);
+    return n;
+  };
+  const center = (id) => { const n = NODES[id]; return { x: n.x + n.w / 2, y: n.y + n.h / 2 }; };
+
+  const gHosts = document.getElementById("hosts");
+  HOSTS.forEach((h) => {
+    el("rect", { x: h.x, y: h.y, width: h.w, height: h.h, rx: 6, class: "host" }, gHosts);
+    el("text", { x: h.x + 10, y: h.y + 15, class: "host-label" }, gHosts).textContent = h.label;
+  });
+
+  const gNodes = document.getElementById("nodes");
+  const nodeEls = {};
+  Object.entries(NODES).forEach(([id, n]) => {
+    const g = el("g", { class: "node", tabindex: "0", role: "button", "data-id": id, "aria-label": `${n.title}: ${n.sub}` }, gNodes);
+    el("rect", { x: n.x, y: n.y, width: n.w, height: n.h, rx: 5 }, g);
+    el("text", { x: n.x + 10, y: n.y + 23, class: "n-title" }, g).textContent = n.title;
+    el("text", { x: n.x + 10, y: n.y + 40, class: "n-sub" }, g).textContent = n.sub;
+    nodeEls[id] = g;
+  });
+
+  // ---------------------------------------------------------------- inspector
+  const $ = (id) => document.getElementById(id);
+  const select = (id) => {
+    Object.values(nodeEls).forEach((g) => g.classList.remove("selected"));
+    nodeEls[id].classList.add("selected");
+    const i = INFO[id];
+    $("ins-tag").textContent = i.tag;
+    $("ins-name").textContent = NODES[id].title;
+    $("ins-where").textContent = i.where;
+    $("ins-role").textContent = i.role;
+    $("ins-why").textContent = i.why;
+    $("ins-fail").textContent = i.fail;
+    $("ins-alt").textContent = i.alt;
+  };
+  gNodes.addEventListener("click", (e) => { const g = e.target.closest(".node"); if (g) select(g.dataset.id); });
+  gNodes.addEventListener("keydown", (e) => {
+    if ((e.key === "Enter" || e.key === " ") && e.target.closest(".node")) { e.preventDefault(); select(e.target.closest(".node").dataset.id); }
+  });
+  select("nginx");
+
+  // Component table
+  const ROWS = [
+    ["nginx", "edge · 80, 443", "TLS, reverse proxy, load balancing", "Stateless", "Instance lebih besar / ALB"],
+    ["api1", "edge, app · 8000–8001", "HTTP API, auth, validasi, orkestrasi", "Stateless", "Menambah replika"],
+    ["rabbit", "broker · 5672", "Queue durable, retry, dead-letter", "Stateful", "Vertikal; cluster + quorum queue"],
+    ["worker1", "broker, ops · 9101", "Memproses task secara idempotent", "Stateless", "Menambah consumer"],
+    ["postgres", "data · 5432", "Source of truth", "Stateful", "Vertikal; read replica; RDS"],
+    ["redis", "data · 6379", "Cache-aside, rate limit", "Disposable", "Vertikal; ElastiCache"],
+    ["prom", "ops · 9090 (localhost)", "Metrics dan alert rule", "Stateful", "Retention; managed Prometheus"],
+    ["grafana", "ops · 3000 (localhost)", "Dashboard", "Stateful ringan", "—"],
+    ["nat", "public · —", "Akses keluar untuk private subnet", "Stateless", "NAT Gateway per AZ"],
+  ];
+  const tbody = $("component-rows");
+  ROWS.forEach(([id, where, resp, state, scale]) => {
+    const tr = document.createElement("tr");
+    const name = id === "api1" ? "API (api-1..3)" : id === "worker1" ? "Worker (worker-1..2)" : NODES[id].title;
+    [name, where, resp, state, scale].forEach((v) => { const td = document.createElement("td"); td.textContent = v; tr.appendChild(td); });
+    tbody.appendChild(tr);
+  });
+
+  // ---------------------------------------------------------------- player
+  const reduced = matchMedia("(prefers-reduced-motion: reduce)").matches;
+  const gRoutes = $("routes"), gPackets = $("packets");
+  const tabs = $("scenario-tabs"), list = $("step-list");
+  let sc = SCENARIOS[0], idx = -1, playing = !reduced, raf = 0, timer = 0, speed = 1, token = 0;
+
+  SCENARIOS.forEach((s, i) => {
+    const b = document.createElement("button");
+    b.type = "button"; b.role = "tab"; b.id = `tab-${s.id}`;
+    b.style.setProperty("--c", s.color);
+    b.innerHTML = `<i aria-hidden="true"></i>${s.name}`;
+    b.addEventListener("click", () => loadScenario(i, true));
+    tabs.appendChild(b);
+  });
+
+  function clearStage() {
+    cancelAnimationFrame(raf); clearTimeout(timer); token++;
+    gRoutes.replaceChildren(); gPackets.replaceChildren();
+    Object.values(nodeEls).forEach((g) => { g.classList.remove("active"); g.style.removeProperty("--pc"); });
+  }
+
+  function loadScenario(i, autoplay) {
+    sc = SCENARIOS[i];
+    [...tabs.children].forEach((b, j) => b.setAttribute("aria-selected", String(j === i)));
+    $("sc-title").textContent = sc.name;
+    $("sc-desc").textContent = sc.desc;
+    $("stage").style.setProperty("--sc", sc.color);
+    list.replaceChildren(...sc.steps.map((st, j) => {
+      const li = document.createElement("li");
+      const b = document.createElement("button");
+      b.type = "button"; b.textContent = st.text;
+      b.addEventListener("click", () => { playing = false; syncPlay(); go(j); });
+      li.appendChild(b); return li;
+    }));
+    Object.values(nodeEls).forEach((g) => g.classList.remove("down"));
+    clearStage();
+    idx = -1;
+    if (autoplay && !reduced) { playing = true; syncPlay(); }
+    go(0);
+  }
+
+  function applyState(upTo) {
+    // Down/up markers are cumulative so jumping to any step shows the right state.
+    Object.values(nodeEls).forEach((g) => g.classList.remove("down"));
+    for (let j = 0; j <= upTo; j++) {
+      (sc.steps[j].down || []).forEach((id) => nodeEls[id].classList.add("down"));
+      (sc.steps[j].up || []).forEach((id) => nodeEls[id].classList.remove("down"));
+    }
+  }
+
+  function go(j) {
+    if (j < 0 || j >= sc.steps.length) return;
+    clearStage();
+    idx = j;
+    const st = sc.steps[j];
+    const color = COLOR[st.c];
+    applyState(j);
+    [...list.children].forEach((li, k) => { li.classList.toggle("current", k === j); li.classList.toggle("done", k < j); });
+    // Scroll only the step list, never the page (autoplay must not move the reader).
+    const li = list.children[j];
+    if (li.offsetTop < list.scrollTop || li.offsetTop + li.offsetHeight > list.scrollTop + list.clientHeight) {
+      list.scrollTop = li.offsetTop - list.clientHeight / 2 + li.offsetHeight / 2;
+    }
+    $("step-count").textContent = `Langkah ${j + 1} / ${sc.steps.length}`;
+    $("step-text").textContent = st.text;
+
+    const my = token;
+    const done = () => {
+      if (my !== token) return;
+      if (playing) timer = setTimeout(() => { if (my === token) next(true); }, 1700 / speed);
+    };
+    if (st.path) animatePath(st.path, color, !!st.fail, done);
+    else if (st.pulse) animatePulse(st.pulse, color, done);
+    else done();
+  }
+
+  function next(wrap) {
+    if (idx + 1 < sc.steps.length) go(idx + 1);
+    else if (wrap) {
+      const n = (SCENARIOS.indexOf(sc) + 1) % SCENARIOS.length;
+      timer = setTimeout(() => loadScenario(n, true), 900 / speed);
+    }
+  }
+
+  function animatePath(ids, color, failAtEnd, done) {
+    ids.forEach((id) => { nodeEls[id].classList.add("active"); nodeEls[id].style.setProperty("--pc", color); });
+    const pts = ids.map(center);
+    const d = pts.map((p, k) => `${k ? "L" : "M"}${p.x},${p.y}`).join(" ");
+    const route = el("path", { d, class: "route", stroke: color, "stroke-dasharray": "0 1" }, gRoutes);
+    const total = route.getTotalLength();
+    const dot = el("circle", { r: 7, class: "packet", fill: color, filter: "url(#glow)" }, gPackets);
+    const stopAt = failAtEnd ? total * 0.82 : total;
+    if (reduced) {
+      route.setAttribute("stroke-dasharray", `${stopAt} ${total}`);
+      const p = route.getPointAtLength(stopAt); dot.setAttribute("cx", p.x); dot.setAttribute("cy", p.y);
+      if (failAtEnd) crossAt(p, color);
+      return done();
+    }
+    const duration = Math.max(700, stopAt * 3.2) / speed;
+    const t0 = performance.now();
+    const my = token;
+    const frame = (now) => {
+      if (my !== token) return;
+      const t = Math.min(1, (now - t0) / duration);
+      const e = t < 0.5 ? 2 * t * t : 1 - Math.pow(-2 * t + 2, 2) / 2;
+      const len = stopAt * e;
+      const p = route.getPointAtLength(len);
+      dot.setAttribute("cx", p.x); dot.setAttribute("cy", p.y);
+      route.setAttribute("stroke-dasharray", `${len} ${total}`);
+      if (t < 1) raf = requestAnimationFrame(frame);
+      else { if (failAtEnd) crossAt(p, color); done(); }
+    };
+    raf = requestAnimationFrame(frame);
+  }
+
+  function crossAt(p, color) {
+    const s = 9;
+    el("path", { d: `M${p.x - s},${p.y - s} L${p.x + s},${p.y + s} M${p.x + s},${p.y - s} L${p.x - s},${p.y + s}`, stroke: color, "stroke-width": 3.5, "stroke-linecap": "round" }, gPackets);
+  }
+
+  function animatePulse(id, color, done) {
+    nodeEls[id].classList.add("active"); nodeEls[id].style.setProperty("--pc", color);
+    const n = NODES[id];
+    const ring = el("rect", { x: n.x, y: n.y, width: n.w, height: n.h, rx: 6, class: "pulse", stroke: color }, gPackets);
+    if (reduced) return done();
+    const t0 = performance.now(), duration = 1300 / speed, my = token;
+    const frame = (now) => {
+      if (my !== token) return;
+      const t = Math.min(1, (now - t0) / duration);
+      const grow = 14 * ((t * 2) % 1);
+      ring.setAttribute("x", n.x - grow); ring.setAttribute("y", n.y - grow);
+      ring.setAttribute("width", n.w + grow * 2); ring.setAttribute("height", n.h + grow * 2);
+      ring.setAttribute("opacity", String(1 - ((t * 2) % 1)));
+      if (t < 1) raf = requestAnimationFrame(frame); else { ring.remove(); done(); }
+    };
+    raf = requestAnimationFrame(frame);
+  }
+
+  const syncPlay = () => { $("btn-play").textContent = playing ? "Jeda" : "Putar"; };
+  $("btn-play").addEventListener("click", () => {
+    playing = !playing; syncPlay();
+    if (playing) { if (idx + 1 >= sc.steps.length) loadScenario(SCENARIOS.indexOf(sc), true); else next(true); }
+    else { clearTimeout(timer); }
+  });
+  $("btn-next").addEventListener("click", () => { playing = false; syncPlay(); if (idx + 1 < sc.steps.length) go(idx + 1); });
+  $("btn-prev").addEventListener("click", () => { playing = false; syncPlay(); go(Math.max(0, idx - 1)); });
+  $("speed").addEventListener("change", (e) => { speed = Number(e.target.value); });
+
+  // Pause the animation loop while the page is hidden.
+  document.addEventListener("visibilitychange", () => {
+    if (document.hidden) { clearTimeout(timer); cancelAnimationFrame(raf); }
+    else if (playing) go(idx);
+  });
+
+  // ---------------------------------------------------------------- theme
+  const root = document.documentElement;
+  try { const t = localStorage.getItem("tp-theme"); if (t) root.dataset.theme = t; } catch { /* storage unavailable */ }
+  $("theme-toggle").addEventListener("click", () => {
+    const dark = root.dataset.theme ? root.dataset.theme === "dark" : matchMedia("(prefers-color-scheme: dark)").matches;
+    root.dataset.theme = dark ? "light" : "dark";
+    try { localStorage.setItem("tp-theme", root.dataset.theme); } catch { /* storage unavailable */ }
+  });
+
+  syncPlay();
+  loadScenario(0, !reduced);
+})();
+</script>
+</body>
+</html>

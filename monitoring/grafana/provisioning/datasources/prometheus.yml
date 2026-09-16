@@ -1,0 +1,14 @@
+# Provisioned datasource: Grafana is configured from files at startup, so a rebuilt
+# Grafana container is identical to the old one (no click-ops to redo).
+apiVersion: 1
+
+datasources:
+  - name: Prometheus
+    uid: prometheus
+    type: prometheus
+    access: proxy            # the Grafana SERVER queries Prometheus, not your browser
+    url: ${PROMETHEUS_URL}
+    isDefault: true
+    editable: false
+    jsonData:
+      timeInterval: 15s      # matches scrape_interval; keeps $__rate_interval correct

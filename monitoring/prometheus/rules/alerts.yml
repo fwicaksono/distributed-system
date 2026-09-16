@@ -1,0 +1,104 @@
+# Recording rules precompute expensive queries; alert rules fire on SYMPTOMS users feel
+# (errors, latency, stuck work), not on every internal twitch.
+#
+# Alerts appear in Prometheus → Alerts. To deliver them (Slack, email, PagerDuty) add
+# Alertmanager — see README "Production improvements".
+
+groups:
+  - name: recording
+    rules:
+      - record: job:http_requests:rate5m
+        expr: sum by (job) (rate(http_requests_total[5m]))
+      - record: job:http_errors:ratio5m
+        expr: |
+          sum by (job) (rate(http_requests_total{status=~"5.."}[5m]))
+          / clamp_min(sum by (job) (rate(http_requests_total[5m])), 1e-9)
+      - record: job:http_latency_seconds:p95_5m
+        expr: histogram_quantile(0.95, sum by (le, job) (rate(http_request_duration_seconds_bucket[5m])))
+
+  - name: availability
+    rules:
+      - alert: TargetDown
+        expr: up == 0
+        for: 1m
+        labels: { severity: critical }
+        annotations:
+          summary: "{{ $labels.job }} target {{ $labels.instance }} is down"
+          description: "Prometheus could not scrape it for 1 minute (process dead, host down, or SG/firewall blocking)."
+
+      - alert: AllApiInstancesDown
+        expr: sum(up{job="api"}) == 0
+        for: 30s
+        labels: { severity: critical }
+        annotations:
+          summary: "No API instance is reachable — full outage"
+
+  - name: api
+    rules:
+      - alert: HighErrorRate
+        expr: job:http_errors:ratio5m{job="api"} > 0.05
+        for: 5m
+        labels: { severity: warning }
+        annotations:
+          summary: "API 5xx ratio above 5% for 5 minutes ({{ $value | humanizePercentage }})"
+
+      - alert: HighLatencyP95
+        expr: job:http_latency_seconds:p95_5m{job="api"} > 0.5
+        for: 10m
+        labels: { severity: warning }
+        annotations:
+          summary: "API p95 latency above 500ms ({{ $value | humanizeDuration }})"
+
+  - name: queue
+    rules:
+      - alert: QueueBacklogGrowing
+        expr: sum(rabbitmq_detailed_queue_messages_ready{queue="tasks.process"}) > 500
+        for: 10m
+        labels: { severity: warning }
+        annotations:
+          summary: "tasks.process backlog > 500 for 10m — workers can't keep up"
+          description: "Scale workers or check worker errors. Queue depth: {{ $value }}"
+
+      - alert: DeadLetterQueueNotEmpty
+        expr: sum(rabbitmq_detailed_queue_messages_ready{queue="tasks.dead-letter"}) > 0
+        for: 5m
+        labels: { severity: warning }
+        annotations:
+          summary: "Messages in tasks.dead-letter need manual inspection"
+
+      - alert: NoWorkersConsuming
+        expr: sum(rabbitmq_detailed_queue_consumers{queue="tasks.process"}) == 0
+        for: 2m
+        labels: { severity: critical }
+        annotations:
+          summary: "tasks.process has zero consumers — nothing is being processed"
+
+  - name: resources
+    rules:
+      - alert: HostDiskAlmostFull
+        expr: (node_filesystem_avail_bytes{fstype!~"tmpfs|overlay"} / node_filesystem_size_bytes{fstype!~"tmpfs|overlay"}) < 0.15
+        for: 5m
+        labels: { severity: warning }
+        annotations:
+          summary: "{{ $labels.instance_name }}: less than 15% disk free on {{ $labels.mountpoint }}"
+
+      - alert: HostHighMemory
+        expr: (1 - node_memory_MemAvailable_bytes / node_memory_MemTotal_bytes) > 0.9
+        for: 5m
+        labels: { severity: warning }
+        annotations:
+          summary: "{{ $labels.instance_name }}: memory usage above 90%"
+
+      - alert: HostHighCpu
+        expr: 1 - avg by (instance_name) (rate(node_cpu_seconds_total{mode="idle"}[5m])) > 0.9
+        for: 10m
+        labels: { severity: warning }
+        annotations:
+          summary: "{{ $labels.instance_name }}: CPU above 90% for 10 minutes"
+
+      - alert: PostgresConnectionsHigh
+        expr: sum(pg_stat_activity_count) / max(pg_settings_max_connections) > 0.8
+        for: 5m
+        labels: { severity: warning }
+        annotations:
+          summary: "PostgreSQL connections above 80% of max_connections"

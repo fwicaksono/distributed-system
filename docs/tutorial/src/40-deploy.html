@@ -1,0 +1,383 @@
+<section class="step" id="deploy-docker-ec2" data-phase="Deploy ke AWS" data-title="Deploy Docker ke EC2">
+<dl class="brief">
+  <div><dt>Tujuan</dt><dd>Menjalankan seluruh stack lokal di <em>satu</em> EC2 instance — arsitektur dengan biaya paling minimal.</dd></div>
+  <div><dt>Kenapa</dt><dd>Pisahkan pertanyaan “apakah jalan di host Linux cloud?” dari “apakah jalan lintas host?”. Banyak produk nyata tidak pernah butuh lebih dari ini.</dd></div>
+  <div><dt>Prasyarat</dt><dd>Instance edge dari langkah 20, sudah di-bootstrap (Docker terpasang).</dd></div>
+  <div><dt>Dampak ke arsitektur</dt><dd>Diagramnya sama dengan di laptop; host-nya kini remote dan ditagih per jam.</dd></div>
+</dl>
+
+<h3>Langkah-langkah</h3>
+<x-code lang="bash" title="Di node edge">
+ssh tp-edge
+git clone https://github.com/<anda>/distributed-task-platform.git ~/tp && cd ~/tp
+cp .env.example .env && nano .env              # secret sungguhan; LOG_JSON=true
+free -h                                         # 2 GiB + 1 GiB swap: sempit untuk ~16 container
+# Kurangi footprint di instance kecil: satu API + satu worker cukup untuk verifikasi
+sudo docker compose up -d --build postgres redis rabbitmq migrate api-1 worker-1 nginx
+sudo docker compose ps
+curl -s localhost:8080/health/ready | jq
+</x-code>
+<x-out>
+{
+  "status": "ok",
+  "instance": "api-1",
+  "version": "local",
+  "checks": {"postgres": {"status":"ok","latency_ms":1.9}, "redis": {"status":"ok",...}, "rabbitmq": {"status":"ok",...}}
+}
+</x-out>
+<p>File upstream Nginx berisi tiga API; dengan hanya <code>api-1</code> yang berjalan, parameter <code>resolve</code> membuat Nginx tetap bisa start dan me-route ke yang tersedia.</p>
+
+<x-code lang="bash" title="Akses sementara dari laptop">
+# Security Group sg-edge: tambahkan Custom TCP 8080 dari My IP (description: "temporary test")
+curl -s http://<edge-eip>:8080/health/live
+# Hapus rule itu setelahnya. HTTPS di port 443 disiapkan di langkah 30.
+</x-code>
+
+<h3>Apa yang diajarkan deployment ini — dan batasannya</h3>
+<ul>
+<li><strong>Yang berhasil</strong>: container, volume, restart policy, healthcheck, log di host sungguhan; production termurah yang masih layak untuk produk kecil (~$20/bulan).</li>
+<li><strong>Yang tidak</strong>: build di server berarti compiler dan source code ada di host production, build berebut CPU dengan traffic, dan tidak ada artifact untuk rollback. Langkah 25 memperbaikinya dengan image dari ECR.</li>
+<li><strong>Satu failure domain</strong>: instance berhenti → semuanya berhenti. Itulah trade-off jujur untuk $20.</li>
+</ul>
+
+<details class="errors"><summary>Error yang sering muncul</summary><div class="inner">
+<ul>
+<li>Build ter-kill / host tidak responsif — kehabisan memori saat <code>pip install</code>; swap file dari bootstrap membantu, atau build image di CI (langkah 34).</li>
+<li><code>permission denied while trying to connect to the Docker daemon socket</code> — pakai <code>sudo</code> atau tambahkan user ke grup <code>docker</code>.</li>
+<li>Tidak bisa mengakses :8080 — rule SG sementara belum ada, atau Anda memakai private IP dari luar.</li>
+</ul>
+</div></details>
+<p>Hentikan stack ini sebelum lanjut: <code>sudo docker compose down</code>.</p>
+</section>
+
+<section class="step" id="multi-ec2" data-phase="Deploy ke AWS" data-title="Arsitektur Multi-EC2">
+<dl class="brief">
+  <div><dt>Tujuan</dt><dd>Memecah sistem ke lima node berdasarkan role, dengan deploy image immutable dari ECR.</dd></div>
+  <div><dt>Kenapa</dt><dd>Fault isolation, profil resource yang independen, dan jaringan yang realistis di antara komponen.</dd></div>
+  <div><dt>Prasyarat</dt><dd>Langkah 16–23 selesai; semua node sudah di-bootstrap; repository ECR dan secret di Parameter Store sudah ada (script 03).</dd></div>
+  <div><dt>Dampak ke arsitektur</dt><dd>Partial failure menjadi mungkin — dan bisa diamati.</dd></div>
+</dl>
+
+<h3>Kenapa dipecah seperti ini</h3>
+<div class="table-wrap"><table>
+<thead><tr><th>Node</th><th>Menjalankan</th><th>Kenapa digabung / dipisah</th></tr></thead>
+<tbody>
+<tr><td>edge</td><td>Nginx, api-1</td><td>Nginx harus public; api-1 ikut di host yang sama untuk menghemat satu node. Trade-off: kode aplikasi berada di public subnet</td></tr>
+<tr><td>app</td><td>api-2, api-3</td><td>Stateless, CPU-bound saat beban tinggi; dua container menunjukkan failover upstream tapi berbagi satu failure domain</td></tr>
+<tr><td>broker</td><td>RabbitMQ, worker-1</td><td>Broker yang stateful diisolasi dari tekanan memori database; worker lokal menghindari satu network hop</td></tr>
+<tr><td>ops</td><td>worker-2, Prometheus, Grafana</td><td>Monitoring harus selamat saat yang dipantau gagal; worker-2 membuktikan consumer bekerja lintas host</td></tr>
+<tr><td>data</td><td>PostgreSQL, Redis</td><td>Keduanya haus memori dan sensitif terhadap latency; <strong>harus diisolasi</strong> dari lonjakan CPU aplikasi. Digabung masih bisa diterima karena Redis kecil dan dibatasi (256 MB)</td></tr>
+</tbody></table></div>
+<p><strong>Boleh berbagi server</strong>: service stateless apa pun, exporter dengan targetnya, Prometheus dengan Grafana. <strong>Sebaiknya diisolasi</strong>: database dari aplikasi (noisy neighbour, blast radius), apa pun yang public dari apa pun yang menyimpan data.</p>
+
+<h3>Sizing</h3>
+<p>Footprint saat idle yang terukur: API ≈ 90 MB RSS, worker ≈ 110 MB + process pool, RabbitMQ ≈ 150 MB, PostgreSQL 512 MB shared buffers + ~10 MB/koneksi, Redis ≤ 256 MB, Prometheus ≈ 300 MB (bertambah seiring jumlah series), Grafana ≈ 120 MB. t3.small (2 GiB) cukup lega untuk dua container aplikasi; node data mendapat 4 GiB untuk buffer dan page cache PostgreSQL.</p>
+
+<h3>Satu file compose per role</h3>
+<x-file path="deploy/compose/common.yml" lang="yaml"></x-file>
+<x-file path="deploy/compose/app.yml" lang="yaml"></x-file>
+<x-file path="deploy/compose/data.yml" lang="yaml"></x-file>
+<details><summary>edge.yml, broker.yml, ops.yml</summary><div class="inner">
+<x-file path="deploy/compose/edge.yml" lang="yaml"></x-file>
+<x-file path="deploy/compose/broker.yml" lang="yaml"></x-file>
+<x-file path="deploy/compose/ops.yml" lang="yaml"></x-file>
+</div></details>
+
+<h3>Konfigurasi dan secret di setiap host</h3>
+<x-file path="deploy/node.env.example" lang="ini"></x-file>
+<x-file path="deploy/scripts/render-env.sh" lang="bash"></x-file>
+
+<h3>Deployment pertama, secara manual</h3>
+<x-code lang="bash" title="1. Build untuk x86 dan push ke ECR (dari laptop)">
+source infra/aws/cli/00-config.sh
+REGISTRY=$AWS_ACCOUNT_ID.dkr.ecr.$AWS_REGION.amazonaws.com
+TAG=$(git rev-parse --short=12 HEAD)
+aws ecr get-login-password --region $AWS_REGION | docker login --username AWS --password-stdin $REGISTRY
+docker buildx build --platform linux/amd64 --build-arg APP_VERSION=$TAG -t $REGISTRY/taskplatform:$TAG --push .
+</x-code>
+<x-code lang="bash" title="2. Deploy sesuai urutan dependency lewat SSM (helper yang sama dengan CI)">
+export AWS_REGION
+.github/scripts/ssm-deploy.sh data    $TAG          # PostgreSQL + Redis dulu: semuanya bergantung padanya
+.github/scripts/ssm-deploy.sh broker  $TAG          # RabbitMQ + worker-1
+.github/scripts/ssm-deploy.sh migrate $TAG app      # schema, dijalankan di node app
+.github/scripts/ssm-deploy.sh ops     $TAG          # worker-2 + monitoring
+.github/scripts/ssm-deploy.sh app     $TAG          # api-2, api-3
+.github/scripts/ssm-deploy.sh edge    $TAG          # api-1, Nginx (template HTTP dulu)
+</x-code>
+<x-out>
+command id: 4f2c9a6e-...
+----- i-0de1...: Success
+==> [app] logging in to 123456789012.dkr.ecr.ap-southeast-1.amazonaws.com
+==> [app] pulling .../taskplatform:3f9a1c2b7d4e
+==> [app] extracting deployment bundle
+2026-09-15T10:02:11Z [deploy:app] rendering secrets from SSM Parameter Store
+rendered: ./app.env
+2026-09-15T10:02:12Z [deploy:app] updating api-2
+ ✔ Container taskplatform-api-2-1  Healthy
+2026-09-15T10:02:31Z [deploy:app] updating api-3
+ ✔ Container taskplatform-api-3-1  Healthy
+2026-09-15T10:02:52Z [deploy:app] release 3f9a1c2b7d4e is live (previous: none)
+</x-out>
+
+<h3>Single point of failure — jujur saja</h3>
+<div class="table-wrap"><table>
+<thead><tr><th>Komponen</th><th>Dampak jika gagal</th><th>Alternatif HA</th></tr></thead>
+<tbody>
+<tr><td>edge (Nginx, EIP)</td><td>Outage total</td><td>ALB di 2 AZ + Auto Scaling Group</td></tr>
+<tr><td>data</td><td>Outage total (auth, read, write)</td><td>RDS Multi-AZ, replica ElastiCache</td></tr>
+<tr><td>broker</td><td>Tidak bisa submit task baru; message yang sudah antre aman di disk</td><td>Cluster 3 node, quorum queue / SQS</td></tr>
+<tr><td>NAT instance</td><td>Node privat tidak bisa deploy atau update; traffic tidak terpengaruh</td><td>NAT Gateway per AZ, VPC endpoint</td></tr>
+<tr><td>Availability Zone a</td><td>Semuanya</td><td>Sebar setiap tier ke subnet di a dan b</td></tr>
+</tbody></table></div>
+<p>Menambah server <em>tidak</em> membuat sistem ini highly available. Yang didapat adalah tier API/worker yang lebih scalable dan lebih banyak cara untuk gagal. Itulah pelajarannya.</p>
+
+<h3>Biaya layout ini</h3>
+<p>4 × t3.small + 1 × t3.medium + t4g.nano ≈ $0,15/jam; ≈ 120 GiB gp3 ≈ $10/bulan; 2 public IPv4 ≈ $7/bulan. Sesi belajar 4 jam menghabiskan kurang dari satu dolar untuk compute — yang menumpuk jika lupa teardown adalah storage dan IP.</p>
+</section>
+
+<section class="step" id="private-networking" data-phase="Deploy ke AWS" data-title="Private Networking">
+<dl class="brief">
+  <div><dt>Tujuan</dt><dd>Memverifikasi setiap service berbicara dengan service lain lewat private IP, dan tidak ada pihak lain yang bisa.</dd></div>
+  <div><dt>Kenapa</dt><dd>Deployment yang berjalan belum tentu terisolasi dengan benar.</dd></div>
+  <div><dt>Prasyarat</dt><dd>Langkah 25 sudah di-deploy.</dd></div>
+  <div><dt>Dampak ke arsitektur</dt><dd>Membuktikan model keamanan, bukan sekadar mengasumsikannya.</dd></div>
+</dl>
+
+<h3>Matriks komunikasi</h3>
+<div class="table-wrap"><table>
+<thead><tr><th>Dari</th><th>Ke</th><th>Alamat</th><th>Protokol</th><th>Diizinkan oleh</th></tr></thead>
+<tbody>
+<tr><td>Nginx (edge)</td><td>api-1</td><td><code>api-1:8000</code></td><td>HTTP</td><td>Docker network (host yang sama)</td></tr>
+<tr><td>Nginx (edge)</td><td>api-2, api-3</td><td><code>10.20.11.20:8000/8001</code></td><td>HTTP</td><td>sg-app ← sg-edge</td></tr>
+<tr><td>API</td><td>PostgreSQL, Redis</td><td><code>10.20.11.50:5432/6379</code></td><td>PG wire, RESP</td><td>sg-data ← sg-edge, sg-app</td></tr>
+<tr><td>API</td><td>RabbitMQ</td><td><code>10.20.11.30:5672</code></td><td>AMQP</td><td>sg-broker ← sg-edge, sg-app</td></tr>
+<tr><td>worker-1</td><td>RabbitMQ</td><td><code>rabbitmq:5672</code></td><td>AMQP</td><td>Docker network</td></tr>
+<tr><td>worker-2</td><td>RabbitMQ, PostgreSQL, Redis</td><td>private IP</td><td>—</td><td>sg-broker/sg-data ← sg-ops</td></tr>
+<tr><td>Prometheus</td><td>semua exporter</td><td>private IP</td><td>HTTP</td><td>setiap SG ← sg-ops</td></tr>
+<tr><td>Node privat</td><td>ECR, SSM, apt</td><td>endpoint public</td><td>HTTPS</td><td>private-rt → NAT; S3 lewat gateway endpoint</td></tr>
+</tbody></table></div>
+
+<h3>Verifikasi jalur positif dan negatif</h3>
+<x-code lang="bash">
+# Positif: dari node app
+ssh tp-app 'for t in 10.20.11.50:5432 10.20.11.50:6379 10.20.11.30:5672; do nc -vz -w 2 ${t%:*} ${t#*:}; done'
+# Negatif: dari node broker, port API di node app tidak diizinkan (sg-app hanya menerima edge + ops)
+ssh tp-broker 'nc -vz -w 2 10.20.11.20 8000'
+# Negatif: dari internet, tidak ada selain 80/443/22 di edge
+nmap -Pn -p 22,80,443,5432,6379,5672,8000,9100 <edge-eip>
+# Nama di dalam Docker vs IP lintas host
+ssh tp-broker 'sudo docker exec taskplatform-worker-1-1 getent hosts rabbitmq'
+</x-code>
+<x-out>
+Connection to 10.20.11.50 5432 port [tcp/postgresql] succeeded!
+Connection to 10.20.11.50 6379 port [tcp/redis] succeeded!
+Connection to 10.20.11.30 5672 port [tcp/amqp] succeeded!
+nc: connect to 10.20.11.20 port 8000 (tcp) timed out: Operation now in progress
+PORT     STATE    SERVICE
+22/tcp   open     ssh
+80/tcp   open     http
+443/tcp  open     https
+5432/tcp filtered postgresql
+...
+172.28.0.2      rabbitmq
+</x-out>
+<p><code>filtered</code> di nmap = tidak ada respons (dibuang SG). <code>closed</code> berarti host menjawab dengan reset — bisa dijangkau tapi tidak ada yang listen, yang menandakan ada pembatasan SG yang terlewat.</p>
+
+<details class="errors"><summary>Error yang sering muncul</summary><div class="inner">
+<ul>
+<li>Log API berisi <code>Connection refused</code> ke 10.20.11.50:5432 — PostgreSQL di-publish di 127.0.0.1, bukan <code>${PRIVATE_IP}</code>, atau container tidak berjalan.</li>
+<li>Timeout ke 10.20.11.50:5432 — sg-data tidak memuat SG sumber; atau rule ufw/DOCKER-USER terlalu ketat.</li>
+<li><code>no pg_hba.conf entry for host "10.20.1.10"</code> — PostgreSQL menolak range sumber; cek <code>config/postgres/pg_hba.conf</code>.</li>
+</ul>
+</div></details>
+</section>
+
+<section class="step" id="nginx-lb-aws" data-phase="Deploy ke AWS" data-title="Load Balancing dengan Nginx">
+<dl class="brief">
+  <div><dt>Tujuan</dt><dd>Load balancing ke tiga API server di dua host dan mengamati failover.</dd></div>
+  <div><dt>Kenapa</dt><dd>Di lokal semua upstream berada di satu mesin. Di sini, salah satunya adalah host lain yang bisa menghilang.</dd></div>
+  <div><dt>Prasyarat</dt><dd>Langkah 26.</dd></div>
+  <div><dt>Dampak ke arsitektur</dt><dd>Horizontal scaling sungguhan untuk tier API.</dd></div>
+</dl>
+
+<x-file path="nginx/templates/edge-http.conf.template" lang="nginx"></x-file>
+<p>Image resmi Nginx me-render <code>/etc/nginx/templates/*.template</code> dengan <code>envsubst</code> saat start, dan hanya mengganti variabel yang ada di environment (<code>${DOMAIN}</code>, <code>${API_2_ADDR}</code>…). Variabel milik Nginx seperti <code>$host</code> dan <code>$request_uri</code> huruf kecil dan tidak tersentuh.</p>
+
+<h3>Amati distribusi dan failover</h3>
+<x-code lang="bash">
+for i in $(seq 12); do curl -s http://<edge-eip>/health/live | jq -r .instance; done | sort | uniq -c
+# Hentikan api-2 di node app, tetap kirim request
+ssh tp-app 'sudo docker stop taskplatform-api-2-1'
+for i in $(seq 12); do curl -s -o /dev/null -w '%{http_code} ' http://<edge-eip>/health/live; done; echo
+ssh tp-edge 'sudo docker logs --since 1m taskplatform-nginx-1 2>&1 | grep -E "upstream|connect\(\)" | tail -3'
+ssh tp-app 'sudo docker start taskplatform-api-2-1'
+</x-code>
+<x-out>
+      4 api-1
+      4 api-2
+      4 api-3
+200 200 200 200 200 200 200 200 200 200 200 200
+... connect() failed (111: Connection refused) while connecting to upstream, upstream: "http://10.20.11.20:8000/health/live"
+</x-out>
+<p>Semuanya 200 meskipun ada error di log: GET yang gagal di api-2 di-retry secara transparan ke server berikutnya (<code>proxy_next_upstream</code>). Setelah 3 kegagalan dalam 10 detik, api-2 dilewati sepenuhnya sampai <code>fail_timeout</code> habis. Coba dengan <code>POST</code> — Nginx tidak akan me-retry, dan sesekali Anda akan melihat <code>502</code>. Sekarang stop seluruh instance node app: kegagalan berubah menjadi <em>timeout</em> (<code>proxy_connect_timeout</code> 3 detik), bukan refused, dan latency melonjak sebelum failover terjadi.</p>
+
+<h3>Algoritma yang layak dicoba</h3>
+<div class="table-wrap"><table>
+<thead><tr><th>Directive</th><th>Perilaku</th><th>Cocok untuk</th></tr></thead>
+<tbody>
+<tr><td>(round robin)</td><td>Bergiliran, opsional <code>weight=</code></td><td>Request seragam dan singkat — API ini</td></tr>
+<tr><td><code>least_conn</code></td><td>Koneksi aktif paling sedikit</td><td>Durasi request tidak rata; ada satu node lambat</td></tr>
+<tr><td><code>ip_hash</code> / <code>hash … consistent</code></td><td>Client yang sama → server yang sama</td><td>Server stateful — hindari; perbaiki statefulness-nya</td></tr>
+<tr><td><code>random two least_conn</code></td><td>Power of two choices</td><td>Banyak load balancer berbagi upstream yang sama</td></tr>
+</tbody></table></div>
+</section>
+
+<section class="step" id="dns" data-phase="Deploy ke AWS" data-title="DNS">
+<dl class="brief">
+  <div><dt>Tujuan</dt><dd>Mengarahkan <code>api.example.com</code> ke node edge.</dd></div>
+  <div><dt>Kenapa</dt><dd>Sertifikat TLS diterbitkan untuk nama, bukan IP; manusia dan client tidak boleh meng-hard-code alamat.</dd></div>
+  <div><dt>Prasyarat</dt><dd>Domain yang Anda kontrol; Elastic IP edge (dialokasikan di langkah 20 — dibahas mendalam di langkah 29).</dd></div>
+  <div><dt>Dampak ke arsitektur</dt><dd>Identitas public yang stabil; IP di belakangnya boleh berubah.</dd></div>
+</dl>
+
+<div class="table-wrap"><table>
+<thead><tr><th>Istilah</th><th>Arti</th></tr></thead>
+<tbody>
+<tr><td>Domain</td><td><code>example.com</code>, disewa dari registrar; record NS menyatakan DNS server mana yang authoritative</td></tr>
+<tr><td>A record</td><td>Nama → alamat IPv4: <code>api.example.com A 198.51.100.7</code></td></tr>
+<tr><td>AAAA record</td><td>Nama → alamat IPv6</td></tr>
+<tr><td>CNAME</td><td>Nama → nama lain: <code>www.example.com CNAME example.com</code>. Tidak boleh di zone apex; tidak bisa digabung dengan record lain pada nama yang sama</td></tr>
+<tr><td>TTL</td><td>Berapa detik resolver boleh meng-cache jawabannya. Gunakan 300 selama masih mengubah-ubah, naikkan nanti</td></tr>
+<tr><td>Public IP / Elastic IP</td><td>Alamat yang dituju A record; tidak boleh berubah → Elastic IP</td></tr>
+</tbody></table></div>
+
+<h3>Langkah-langkah</h3>
+<p><strong>DNS di registrar</strong> (Cloudflare, Niagahoster, Namecheap…): tambahkan record type <em>A</em>, name <code>api</code>, value <code>&lt;Elastic IP edge&gt;</code>, TTL 300. Di Cloudflare set <em>Proxy status: DNS only</em> (awan abu-abu) — jika tidak, Cloudflare yang melakukan TLS termination dan HTTP-01 berperilaku berbeda.</p>
+<p><strong>Route 53</strong> (opsional, $0,50/bulan per hosted zone): <strong>Route 53 → Hosted zones → Create hosted zone</strong> <code>example.com</code>, public. Salin empat record NS ke registrar Anda. <strong>Create record</strong>: name <code>api</code>, type A, value EIP, TTL 300. (Dengan ALB Anda akan memakai record <em>Alias</em> — query gratis dan mengikuti IP ALB yang berubah-ubah.)</p>
+
+<h3>Verifikasi</h3>
+<x-code lang="bash">
+dig +short api.example.com A
+dig api.example.com A @8.8.8.8 +noall +answer
+dig +trace api.example.com | tail -5       # menelusuri root → .com → nameserver Anda
+curl -s http://api.example.com/health/live
+</x-code>
+<x-out>
+198.51.100.7
+api.example.com.   300   IN   A   198.51.100.7
+{"status":"ok","instance":"api-3","version":"3f9a1c2b7d4e","checks":{}}
+</x-out>
+<details class="errors"><summary>Error yang sering muncul</summary><div class="inner">
+<ul>
+<li><code>dig</code> tidak mengembalikan apa pun — record belum tersimpan, zone salah, atau nameserver di registrar tidak mengarah ke tempat Anda mengedit.</li>
+<li>IP lama masih muncul — caching TTL; tunggu, atau query authoritative server langsung: <code>dig @ns-123.awsdns-45.com api.example.com</code>.</li>
+<li>Jalan di laptop, tidak di HP — ada override <code>/etc/hosts</code> lokal atau cache resolver yang berbeda.</li>
+</ul>
+</div></details>
+</section>
+
+<section class="step" id="elastic-ip" data-phase="Deploy ke AWS" data-title="Elastic IP">
+<dl class="brief">
+  <div><dt>Tujuan</dt><dd>Paham kenapa node edge — dan NAT — butuh Elastic IP, serta biayanya.</dd></div>
+  <div><dt>Kenapa</dt><dd>Public IP yang di-assign otomatis berubah setiap kali instance di-stop. DNS yang mengarah ke IP itu akan rusak tanpa suara.</dd></div>
+  <div><dt>Prasyarat</dt><dd>Langkah 20.</dd></div>
+  <div><dt>Dampak ke arsitektur</dt><dd>Titik masuk yang stabil; mengganti instance cukup dengan memindahkan EIP.</dd></div>
+</dl>
+<div class="table-wrap"><table>
+<thead><tr><th>Aspek</th><th>Jawaban</th></tr></thead>
+<tbody>
+<tr><td>Apa itu</td><td>Public IPv4 statis yang dialokasikan ke akun Anda sampai Anda me-release-nya</td></tr>
+<tr><td>Masalah yang diselesaikan</td><td>Stop/start atau ganti instance edge tanpa mengubah DNS</td></tr>
+<tr><td>Berinteraksi dengan</td><td>IGW (melakukan translasi 1:1), ENI (tempat ditempelkan), A record DNS</td></tr>
+<tr><td>Kapan tidak perlu</td><td>Di belakang ALB/NLB (gunakan DNS name load balancer); instance privat</td></tr>
+<tr><td>Biaya</td><td>Semua public IPv4 ≈ $0,005/jam (~$3,60/bulan), terpasang atau tidak</td></tr>
+<tr><td>Keamanan</td><td>EIP yang Anda release bisa diberikan ke orang lain — hapus record DNS lebih dulu (risiko subdomain takeover)</td></tr>
+<tr><td>Kesalahan umum</td><td>Menghapus instance tapi lupa me-release EIP; mengarahkan DNS ke IP yang di-assign otomatis</td></tr>
+</tbody></table></div>
+<h3>Console</h3>
+<ol>
+<li><strong>EC2 → Network &amp; Security → Elastic IPs → Allocate Elastic IP address</strong>: Amazon’s pool of IPv4 addresses; tag <code>Name=taskplatform-edge-eip</code>, <code>Project=taskplatform</code>.</li>
+<li>Pilih EIP tersebut → <strong>Actions → Associate Elastic IP address</strong> → Resource type <em>Instance</em> → <code>taskplatform-edge</code>.</li>
+</ol>
+<h3>Verifikasi</h3>
+<x-code lang="bash">
+aws ec2 stop-instances --instance-ids <edge-id> && aws ec2 wait instance-stopped --instance-ids <edge-id>
+aws ec2 start-instances --instance-ids <edge-id> && aws ec2 wait instance-running --instance-ids <edge-id>
+aws ec2 describe-instances --instance-ids <edge-id> --query 'Reservations[0].Instances[0].PublicIpAddress'
+dig +short api.example.com      # alamatnya sama dengan sebelum di-stop
+</x-code>
+</section>
+
+<section class="step" id="tls-https" data-phase="Deploy ke AWS" data-title="TLS / HTTPS">
+<dl class="brief">
+  <div><dt>Tujuan</dt><dd>Menyajikan API lewat HTTPS dengan sertifikat Let’s Encrypt yang diperbarui otomatis, serta redirect dari HTTP.</dd></div>
+  <div><dt>Kenapa</dt><dd>Tanpa TLS, JWT dan password melintasi internet dalam bentuk plain text, dan siapa pun di jalur itu bisa mengubah response.</dd></div>
+  <div><dt>Prasyarat</dt><dd>Langkah 28 sudah resolve ke EIP; sg-edge mengizinkan 80 dan 443 dari mana saja.</dd></div>
+  <div><dt>Dampak ke arsitektur</dt><dd>TLS termination di edge; traffic internal tetap HTTP di dalam VPC (lihat catatan).</dd></div>
+</dl>
+
+<div class="table-wrap"><table>
+<thead><tr><th>Istilah</th><th>Arti</th></tr></thead>
+<tbody>
+<tr><td>HTTP</td><td>Protokol request/response dalam plain text di atas TCP port 80</td></tr>
+<tr><td>HTTPS</td><td>HTTP di dalam session TLS di port 443</td></tr>
+<tr><td>TLS</td><td>Handshake mengautentikasi server (lewat sertifikat) dan menegosiasikan key; setelah itu data dienkripsi dan dijaga integritasnya. TLS 1.3 hanya butuh satu round trip</td></tr>
+<tr><td>Certificate</td><td>Public key server + nama domain, ditandatangani CA yang dipercaya client. <code>fullchain.pem</code> = sertifikat + intermediate; <code>privkey.pem</code> tidak pernah meninggalkan server</td></tr>
+<tr><td>ACME HTTP-01</td><td>Let’s Encrypt meminta sebuah token di <code>http://api.example.com/.well-known/acme-challenge/…</code>; kemampuan menyajikannya membuktikan kendali atas domain</td></tr>
+<tr><td>Certificate renewal</td><td>Sertifikat berlaku 90 hari; <code>certbot renew</code> memperbarui dalam 30 hari terakhir sebelum kedaluwarsa</td></tr>
+<tr><td>Redirect</td><td><code>301</code> dari <code>http://</code> ke <code>https://</code>; HSTS lalu memberi tahu browser agar tidak pernah mencoba HTTP</td></tr>
+</tbody></table></div>
+
+<h3>Langkah-langkah</h3>
+<x-file path="deploy/scripts/issue-certificate.sh" lang="bash"></x-file>
+<x-code lang="bash">
+ssh tp-edge 'sudo /opt/taskplatform/current/deploy/scripts/issue-certificate.sh anda@example.com'
+</x-code>
+<x-out>
+public IP: 198.51.100.7 | api.example.com resolves to: 198.51.100.7
+==> requesting certificate (staging first avoids Let's Encrypt rate limits)
+Successfully received certificate.
+==> staging succeeded; requesting the real certificate
+Certificate is saved at: /etc/letsencrypt/live/api.example.com/fullchain.pem
+==> switching Nginx to the HTTPS template
+{"status":"ok","instance":"api-2","version":"3f9a1c2b7d4e","checks":{}}
+HTTPS is live for api.example.com
+</x-out>
+
+<h3>Konfigurasi site HTTPS</h3>
+<x-file path="nginx/templates/edge-https.conf.template" lang="nginx"></x-file>
+
+<h3>Renewal otomatis</h3>
+<x-file path="deploy/systemd/certbot-renew.service" lang="ini"></x-file>
+<x-file path="deploy/systemd/certbot-renew.timer" lang="ini"></x-file>
+
+<h3>Verifikasi</h3>
+<x-code lang="bash">
+curl -sI http://api.example.com/health/live | head -3
+curl -s https://api.example.com/health/ready | jq .status
+echo | openssl s_client -connect api.example.com:443 -servername api.example.com 2>/dev/null \
+  | openssl x509 -noout -issuer -dates -subject
+ssh tp-edge 'systemctl list-timers certbot-renew.timer; sudo systemctl start certbot-renew.service && journalctl -u certbot-renew -n 5'
+</x-code>
+<x-out>
+HTTP/1.1 301 Moved Permanently
+Location: https://api.example.com/health/live
+"ok"
+issuer=C = US, O = Let's Encrypt, CN = R11
+notBefore=Sep 15 09:12:03 2026 GMT
+notAfter=Dec 14 09:12:02 2026 GMT
+subject=CN = api.example.com
+</x-out>
+
+<x-note kind="info" title="Plain HTTP di dalam VPC?">
+<p>Traffic dari Nginx ke API, dan dari API ke PostgreSQL, tidak dienkripsi di dalam VPC. AWS sudah mengenkripsi traffic antar instance Nitro modern di level hardware, dan Security Group membatasi siapa yang boleh mengirimnya. Regulasi compliance (PCI, HIPAA) sering tetap mewajibkan TLS di mana-mana: PostgreSQL <code>ssl=on</code> + <code>sslmode=verify-full</code>, TLS untuk Redis, AMQPS, atau service mesh dengan mTLS. Pahami trade-off yang Anda ambil.</p>
+</x-note>
+<details class="errors"><summary>Error yang sering muncul</summary><div class="inner">
+<ul>
+<li><code>Timeout during connect (likely firewall problem)</code> — port 80 tidak dibuka ke 0.0.0.0/0; Let’s Encrypt memvalidasi dari banyak IP yang tidak dipublikasikan.</li>
+<li><code>too many certificates already issued</code> — kena rate limit karena request production berulang; gunakan <code>--staging</code> saat mencoba-coba.</li>
+<li>Nginx gagal: <code>cannot load certificate "/etc/letsencrypt/live/…"</code> — template HTTPS diaktifkan sebelum sertifikat terbit; set <code>NGINX_SITE_TEMPLATE=edge-http</code>, recreate nginx, terbitkan sertifikat, lalu ganti kembali.</li>
+<li>Browser memberi peringatan setelah renewal — Nginx belum di-reload; unit service di atas sudah melakukannya.</li>
+</ul>
+</div></details>
+</section>

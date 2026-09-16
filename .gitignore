@@ -1,0 +1,25 @@
+# Secrets & local state
+.env
+.env.*
+!.env.example
+infra/aws/.state
+*.pem
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+
+# Load test output
+loadtest/results/
+
+# OS / editors
+.DS_Store
+.idea/
+.vscode/

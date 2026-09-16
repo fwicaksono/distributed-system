@@ -1,0 +1,65 @@
+# AWS edge node — PHASE 2 (production): HTTPS termination + load balancing.
+#
+# Required environment (from /opt/taskplatform/shared/node.env):
+#   DOMAIN       api.example.com
+#   API_1_ADDR   api-1:8000            (container on this host, via Docker network)
+#   API_2_ADDR   10.20.11.20:8000      (app node private IP)
+#   API_3_ADDR   10.20.11.20:8001
+
+upstream api_backend {
+    zone api_backend 64k;
+    server ${API_1_ADDR} max_fails=3 fail_timeout=10s;
+    server ${API_2_ADDR} max_fails=3 fail_timeout=10s;
+    server ${API_3_ADDR} max_fails=3 fail_timeout=10s;
+    keepalive 32;
+    keepalive_timeout 60s;
+}
+
+# --- Port 80: ACME challenge + permanent redirect to HTTPS --------------------------------
+server {
+    listen 80 default_server;
+    server_name ${DOMAIN};
+
+    # Certbot renewals use HTTP-01 and must keep working over plain HTTP.
+    location /.well-known/acme-challenge/ {
+        root /var/www/certbot;
+    }
+
+    location / {
+        # 301 = permanent. Browsers cache it; use 302 while experimenting.
+        return 301 https://$host$request_uri;
+    }
+}
+
+# --- Port 443: TLS termination --------------------------------------------------------------
+server {
+    listen 443 ssl default_server;
+    http2 on;
+    server_name ${DOMAIN};
+
+    # Issued by Let's Encrypt (certbot container); renewed by a systemd timer.
+    ssl_certificate     /etc/letsencrypt/live/${DOMAIN}/fullchain.pem;
+    ssl_certificate_key /etc/letsencrypt/live/${DOMAIN}/privkey.pem;
+
+    # Modern-compatible TLS (Mozilla "intermediate" profile).
+    ssl_protocols TLSv1.2 TLSv1.3;
+    ssl_ciphers ECDHE-ECDSA-AES128-GCM-SHA256:ECDHE-RSA-AES128-GCM-SHA256:ECDHE-ECDSA-AES256-GCM-SHA384:ECDHE-RSA-AES256-GCM-SHA384:ECDHE-ECDSA-CHACHA20-POLY1305:ECDHE-RSA-CHACHA20-POLY1305;
+    ssl_prefer_server_ciphers off;
+    ssl_session_cache shared:TLS:10m;   # resume sessions: skip the full handshake
+    ssl_session_timeout 1d;
+    ssl_session_tickets off;
+
+    # HSTS: browsers refuse plain HTTP for this domain for 1 year. Enable only once HTTPS
+    # works reliably — it cannot be easily undone for visitors who already received it.
+    add_header Strict-Transport-Security "max-age=31536000; includeSubDomains" always;
+    add_header X-Content-Type-Options "nosniff" always;
+    add_header X-Frame-Options "DENY" always;
+    add_header Referrer-Policy "no-referrer" always;
+
+    location /api/     { include /etc/nginx/snippets/proxy-api.conf; }
+    location /health/  { include /etc/nginx/snippets/proxy-api.conf; }
+
+    location = /nginx-health { access_log off; default_type text/plain; return 200 "ok\n"; }
+    location = /metrics { return 404; }
+    location / { return 404; }
+}

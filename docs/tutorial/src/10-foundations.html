@@ -1,0 +1,209 @@
+<section class="step" id="project-overview" data-phase="Fondasi" data-title="Gambaran Proyek">
+<dl class="brief">
+  <div><dt>Tujuan</dt><dd>Paham apa yang sedang dibangun — dan yang lebih penting, apa yang <em>tidak</em> dibangun.</dd></div>
+  <div><dt>Kenapa</dt><dd>Keputusan arsitektur hanya masuk akal jika masalah yang diselesaikan jelas dan tidak berubah-ubah.</dd></div>
+  <div><dt>Prasyarat</dt><dd>Tidak ada.</dd></div>
+  <div><dt>Dampak ke arsitektur</dt><dd>Domain bisnis dikunci, sehingga setiap perubahan setelah ini murni perubahan arsitektur.</dd></div>
+</dl>
+
+<p>Produknya adalah <strong>task processing API</strong>. User mendaftar, membuat task (“buat laporan bulanan”), meminta sistem memproses task tersebut, lalu melakukan polling sampai selesai. Prosesnya disimulasikan: worker hanya <em>sleep</em> beberapa detik (pekerjaan I/O-bound) atau melakukan hashing berulang (pekerjaan CPU-bound). Itulah seluruh domain bisnisnya, dan tidak akan bertambah.</p>
+
+<p>Yang bertambah adalah semua hal di sekitarnya. Kita mulai dari satu proses Python dan berakhir dengan sistem yang tersebar di lima EC2 instance, lengkap dengan load balancer, cache, message broker, background worker, private networking, TLS, metrics, dashboard, alert, dan automated deployment pipeline. Di setiap langkah, ajukan delapan pertanyaan yang sama:</p>
+
+<div class="table-wrap"><table>
+<thead><tr><th>Pertanyaan</th><th>Kenapa penting</th></tr></thead>
+<tbody>
+<tr><td>Masalah apa yang diselesaikan?</td><td>Kalau tidak bisa disebutkan, komponen itu tidak perlu ada.</td></tr>
+<tr><td>Kenapa kita butuh itu <em>sekarang</em>?</td><td>Komponen yang ditambahkan sebelum masalahnya muncul hanyalah biaya.</td></tr>
+<tr><td>Apa yang terjadi jika dihapus?</td><td>Menunjukkan apakah komponen itu benar-benar menopang sistem.</td></tr>
+<tr><td>Apa yang terjadi jika gagal?</td><td>Setiap komponen adalah cara baru bagi sistem untuk rusak.</td></tr>
+<tr><td>Berapa biayanya?</td><td>Uang, memori, latency, dan perhatian Anda jam 3 pagi.</td></tr>
+<tr><td>Kompleksitas apa yang ditambahkan?</td><td>Konfigurasi, failure mode, pertanyaan konsistensi, beban operasional.</td></tr>
+<tr><td>Alternatif apa yang ada?</td><td>Selalu ada opsi yang lebih sederhana atau versi managed.</td></tr>
+<tr><td>Kenapa teknologi ini yang dipilih?</td><td>“Semua orang pakai” bukan alasan; trade-off adalah alasan.</td></tr>
+</tbody></table></div>
+
+<h3>Endpoint</h3>
+<div class="table-wrap"><table>
+<thead><tr><th>Method</th><th>Path</th><th>Hasil</th><th>Yang dilatih</th></tr></thead>
+<tbody>
+<tr><td><code>POST</code></td><td><code>/api/v1/auth/register</code>, <code>/auth/token</code></td><td>201, 200</td><td>Validasi, password hashing, JWT</td></tr>
+<tr><td><code>POST</code></td><td><code>/api/v1/tasks</code></td><td>201 Created</td><td>Insert ke PostgreSQL, constraint</td></tr>
+<tr><td><code>GET</code></td><td><code>/api/v1/tasks</code></td><td>200 + cursor</td><td>Index, keyset pagination</td></tr>
+<tr><td><code>GET</code></td><td><code>/api/v1/tasks/{id}</code></td><td>200</td><td>Cache-aside dengan Redis</td></tr>
+<tr><td><code>POST</code></td><td><code>/api/v1/tasks/{id}/process</code></td><td>202 Accepted</td><td>RabbitMQ, worker, idempotency</td></tr>
+<tr><td><code>GET</code></td><td><code>/api/v1/tasks/{id}/status</code></td><td>200</td><td>Polling, data yang selalu fresh</td></tr>
+<tr><td><code>DELETE</code></td><td><code>/api/v1/tasks/{id}</code></td><td>204</td><td>Cache invalidation</td></tr>
+</tbody></table></div>
+
+<x-note kind="warn" title="Anti-tujuan">
+<p>Menambah teknologi tidak otomatis membuat arsitektur lebih baik. Satu monolith berbasis PostgreSQL yang dikelola dengan baik bisa melayani kebanyakan bisnis selama bertahun-tahun. Proyek ini menambah komponen <em>dengan sengaja</em> untuk mempelajari biayanya; tim sungguhan sebaiknya hanya menambahkannya saat ada masalah yang terukur. Karena itu setiap bagian membahas “kapan tidak perlu dipakai”.</p>
+</x-note>
+</section>
+
+<section class="step" id="architecture-overview" data-phase="Fondasi" data-title="Gambaran Arsitektur">
+<dl class="brief">
+  <div><dt>Tujuan</dt><dd>Punya gambaran akhir di kepala sebelum membangun bagian-bagiannya.</dd></div>
+  <div><dt>Kenapa</dt><dd>Setiap langkah berikutnya bergerak menuju diagram ini; tahu tujuannya menjelaskan rutenya.</dd></div>
+  <div><dt>Prasyarat</dt><dd>Langkah 1.</dd></div>
+  <div><dt>Dampak ke arsitektur</dt><dd>Menetapkan target: 5 node EC2, 2 subnet, 6 Security Group.</dd></div>
+</dl>
+
+<div class="diagram" role="img" aria-label="Arsitektur AWS final: node edge di public subnet berisi Nginx dan api-1; node app, broker, ops, dan data di private subnet.">
+<svg viewBox="0 0 980 560" xmlns="http://www.w3.org/2000/svg">
+  <defs><marker id="ah" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0,0 L10,5 L0,10 z" class="arrow"/></marker></defs>
+  <text x="490" y="22" text-anchor="middle" class="t-label" font-size="14">Internet  ·  DNS api.example.com → Elastic IP</text>
+  <line x1="300" y1="30" x2="300" y2="92" class="wire-amber" marker-end="url(#ah)"/>
+  <rect x="20" y="50" width="940" height="495" rx="10" class="zone-vpc"/>
+  <text x="36" y="72" class="t-label" font-size="13">VPC 10.20.0.0/16</text>
+  <rect x="40" y="84" width="900" height="130" rx="8" class="zone-public"/>
+  <text x="56" y="104" class="t-dim" font-size="12">public subnet 10.20.1.0/24 · route 0.0.0.0/0 → Internet Gateway</text>
+  <rect x="150" y="114" width="310" height="86" rx="6" class="box"/>
+  <text x="166" y="136" class="t-label" font-size="14">edge · 10.20.1.10</text>
+  <text x="166" y="158" font-size="12">Nginx :80 :443  TLS + load balancer</text>
+  <text x="166" y="178" font-size="12">api-1 :8000</text>
+  <text x="166" y="194" class="t-dim" font-size="11">sg-edge · Elastic IP</text>
+  <rect x="640" y="114" width="250" height="86" rx="6" class="box-soft"/>
+  <text x="656" y="136" class="t-label" font-size="14">nat · 10.20.1.20</text>
+  <text x="656" y="158" font-size="12">akses internet keluar untuk</text>
+  <text x="656" y="176" font-size="12">private subnet (apt, SSM)</text>
+  <rect x="40" y="232" width="900" height="296" rx="8" class="zone-private"/>
+  <text x="56" y="252" class="t-dim" font-size="12">private subnet 10.20.11.0/24 · route 0.0.0.0/0 → NAT instance · tidak ada jalur masuk dari internet</text>
+  <rect x="80" y="272" width="250" height="92" rx="6" class="box"/>
+  <text x="96" y="294" class="t-label" font-size="14">app · 10.20.11.20</text>
+  <text x="96" y="316" font-size="12">api-2 :8000</text>
+  <text x="96" y="334" font-size="12">api-3 :8001</text>
+  <text x="96" y="354" class="t-dim" font-size="11">sg-app</text>
+  <rect x="400" y="272" width="250" height="92" rx="6" class="box"/>
+  <text x="416" y="294" class="t-label" font-size="14">broker · 10.20.11.30</text>
+  <text x="416" y="316" font-size="12">RabbitMQ :5672</text>
+  <text x="416" y="334" font-size="12">worker-1</text>
+  <text x="416" y="354" class="t-dim" font-size="11">sg-broker</text>
+  <rect x="700" y="272" width="220" height="92" rx="6" class="box"/>
+  <text x="716" y="294" class="t-label" font-size="14">ops · 10.20.11.40</text>
+  <text x="716" y="316" font-size="12">worker-2</text>
+  <text x="716" y="334" font-size="12">Prometheus · Grafana</text>
+  <text x="716" y="354" class="t-dim" font-size="11">sg-ops</text>
+  <rect x="300" y="420" width="300" height="92" rx="6" class="box"/>
+  <text x="316" y="442" class="t-label" font-size="14">data · 10.20.11.50</text>
+  <text x="316" y="464" font-size="12">PostgreSQL :5432</text>
+  <text x="316" y="482" font-size="12">Redis :6379 · /data di EBS terpisah</text>
+  <text x="316" y="502" class="t-dim" font-size="11">sg-data</text>
+  <path d="M300,200 L205,272" class="wire-amber" marker-end="url(#ah)"/>
+  <path d="M330,318 L400,318" class="wire-cobalt" marker-end="url(#ah)"/>
+  <path d="M400,200 L500,272" class="wire-cobalt" marker-end="url(#ah)"/>
+  <path d="M650,318 L700,318" class="wire-cobalt" marker-end="url(#ah)"/>
+  <path d="M205,364 L360,420" class="wire" marker-end="url(#ah)"/>
+  <path d="M525,364 L480,420" class="wire" marker-end="url(#ah)"/>
+  <path d="M790,364 L600,450" class="wire" marker-end="url(#ah)"/>
+  <text x="620" y="400" class="t-dim" font-size="11">Prometheus scrape semua node</text>
+</svg>
+<p class="cap">Amber: traffic user. Cobalt: message task. Abu-abu: akses database/cache.</p>
+</div>
+
+<h3>Satu request, dari awal sampai akhir</h3>
+<ol>
+<li><strong>DNS</strong> me-resolve <code>api.example.com</code> ke Elastic IP milik node edge.</li>
+<li>Packet masuk ke VPC melalui <strong>Internet Gateway</strong>; <strong>sg-edge</strong> mengizinkan port 443.</li>
+<li><strong>Nginx</strong> melakukan TLS termination, menambahkan <code>X-Request-ID</code> dan <code>X-Forwarded-For</code>, lalu memilih API berikutnya secara round robin: <code>api-1</code> (host yang sama), <code>api-2</code> atau <code>api-3</code> (private IP di node app, diizinkan sg-app karena sumbernya membawa sg-edge).</li>
+<li><strong>API</strong> mengecek rate limit di Redis, memvalidasi JWT, lalu membaca task lewat Redis (cache-aside) atau PostgreSQL di node data.</li>
+<li>Untuk <code>/process</code>, API melakukan commit perubahan state, mem-publish message yang durable ke <strong>RabbitMQ</strong>, dan langsung mengembalikan <code>202</code>.</li>
+<li>Sebuah <strong>worker</strong> (di node broker atau ops) menerima message, meng-claim task di PostgreSQL, mengerjakannya, menyimpan hasil, lalu mengirim acknowledgement.</li>
+<li><strong>Prometheus</strong> di node ops melakukan scrape metrics dari semua node setiap 15 detik; <strong>Grafana</strong> menampilkannya sebagai grafik.</li>
+</ol>
+
+<h3>Stateless versus stateful — pembagian yang paling penting</h3>
+<div class="grid-2">
+<div><h4>Stateless (bisa diganti)</h4><p>Nginx, API server, worker. Matikan satu, jalankan yang lain di mana saja; tidak ada data yang hilang. Tier ini di-scale dengan menambah salinan.</p></div>
+<div><h4>Stateful (berharga)</h4><p>PostgreSQL, RabbitMQ, Prometheus. Mereka menyimpan data di disk. Sulit di-scale, dampaknya besar saat gagal, dan di sinilah usaha engineering yang sesungguhnya dicurahkan.</p></div>
+</div>
+</section>
+
+<section class="step" id="why-distributed" data-phase="Fondasi" data-title="Kenapa Distributed System?">
+<dl class="brief">
+  <div><dt>Tujuan</dt><dd>Tahu alasan yang sah untuk mendistribusikan sistem — beserta harganya.</dd></div>
+  <div><dt>Kenapa</dt><dd>Distribusi menukar kegagalan yang sederhana dengan kegagalan yang rumit. Pastikan ada yang Anda dapatkan sebagai gantinya.</dd></div>
+  <div><dt>Prasyarat</dt><dd>Langkah 2.</dd></div>
+  <div><dt>Dampak ke arsitektur</dt><dd>Menjadi dasar setiap pemisahan komponen di langkah berikutnya.</dd></div>
+</dl>
+
+<p><strong>Distributed system</strong> adalah sekumpulan program di mesin berbeda yang berkoordinasi dengan saling mengirim message lewat jaringan agar tampil sebagai satu sistem. Jaringan adalah ciri utamanya — sekaligus masalahnya. Message bisa hilang, tertunda, terduplikasi, atau urutannya berubah; mesin bisa lambat alih-alih mati, dan dari luar keduanya terlihat sama.</p>
+
+<h3>Alasan yang sah untuk distribusi</h3>
+<div class="table-wrap"><table>
+<thead><tr><th>Alasan</th><th>Contoh di proyek ini</th><th>Alternatif lebih murah yang dicoba dulu</th></tr></thead>
+<tbody>
+<tr><td>Kapasitas melebihi satu mesin</td><td>3 API server berbagi beban</td><td>Instance lebih besar (vertical scaling); perbaiki query lambat</td></tr>
+<tr><td>Fault isolation</td><td>Worker yang crash tidak menjatuhkan API</td><td>Proses terpisah di satu host</td></tr>
+<tr><td>Profil resource berbeda</td><td>PostgreSQL butuh RAM + disk; worker butuh CPU</td><td>Batas cgroup di satu host</td></tr>
+<tr><td>Deploy dan scaling independen</td><td>Menambah worker tanpa menyentuh API</td><td>Process manager, container terpisah</td></tr>
+<tr><td>Availability</td><td>(Belum tercapai di sini — hanya satu AZ)</td><td>Restore cepat dari backup</td></tr>
+</tbody></table></div>
+
+<h3>Harganya</h3>
+<ul>
+<li><strong>Partial failure</strong>: sebagian sistem mati sementara sisanya hidup. Monolith hanya punya dua kondisi: jalan atau tidak.</li>
+<li><strong>Latency</strong>: pemanggilan fungsi butuh nanodetik; satu network hop di dalam VPC butuh ~0,2–1 ms.</li>
+<li><strong>Consistency</strong>: dua penyimpanan (PostgreSQL dan Redis, PostgreSQL dan RabbitMQ) bisa tidak sepakat.</li>
+<li><strong>Operasional</strong>: lima mesin yang harus di-patch, dipantau, diamankan, dan dibayar.</li>
+<li><strong>Debugging</strong>: satu aksi user menghasilkan log di empat mesin. Anda butuh correlation ID dan metrics hanya untuk tahu apa yang terjadi.</li>
+</ul>
+
+<x-note kind="tip" title="Fallacies of distributed computing">
+<p>Daftar dari Peter Deutsch ini layak dihafal karena semuanya muncul di proyek ini: jaringan selalu reliable; latency nol; bandwidth tak terbatas; jaringan aman; topologi tidak berubah; hanya ada satu administrator; biaya transport nol; jaringan homogen.</p>
+</x-note>
+</section>
+
+<section class="step" id="prerequisites" data-phase="Fondasi" data-title="Prasyarat">
+<dl class="brief">
+  <div><dt>Tujuan</dt><dd>Install semua tool dan siapkan akun yang dibutuhkan, cukup sekali.</dd></div>
+  <div><dt>Kenapa</dt><dd>Versi yang tidak cocok adalah cara paling membosankan untuk kehilangan satu sore.</dd></div>
+  <div><dt>Prasyarat</dt><dd>Komputer dengan RAM 8 GB+ (stack lokal menjalankan ~16 container), kartu kredit/debit untuk AWS, domain yang Anda kontrol (dari langkah 28).</dd></div>
+  <div><dt>Dampak ke arsitektur</dt><dd>Tidak ada — hanya tooling.</dd></div>
+</dl>
+
+<div class="table-wrap"><table>
+<thead><tr><th>Tool</th><th>Versi</th><th>Dipakai untuk</th><th>Cek</th></tr></thead>
+<tbody>
+<tr><td>Git</td><td>2.40+</td><td>Source control</td><td><code>git --version</code></td></tr>
+<tr><td>Docker Desktop / Engine</td><td>Engine 25+, Compose 2.20+</td><td>Stack lokal (Compose <code>--wait</code>, merge multi-anchor)</td><td><code>docker compose version</code></td></tr>
+<tr><td>Python</td><td>3.11+ (image memakai 3.12)</td><td>Menjalankan test dan tool secara lokal</td><td><code>python3 --version</code></td></tr>
+<tr><td>make</td><td>versi apa pun</td><td>Shortcut perintah</td><td><code>make --version</code></td></tr>
+<tr><td>AWS CLI</td><td>v2</td><td>Provisioning, SSM, ECR</td><td><code>aws --version</code></td></tr>
+<tr><td>jq, curl</td><td>versi apa pun</td><td>Script dan testing API</td><td><code>jq --version</code></td></tr>
+<tr><td>Session Manager plugin</td><td>terbaru</td><td>Shell tanpa SSH dan port forwarding</td><td><code>session-manager-plugin</code></td></tr>
+<tr><td>k6 (opsional di lokal)</td><td>1.x</td><td>Load test (tersedia juga sebagai container image)</td><td><code>k6 version</code></td></tr>
+</tbody></table></div>
+
+<x-code lang="bash" title="macOS (Homebrew)">
+brew install git python@3.12 awscli jq make k6
+brew install --cask docker session-manager-plugin
+</x-code>
+<x-code lang="bash" title="Ubuntu 24.04">
+sudo apt-get update && sudo apt-get install -y git python3 python3-venv make jq curl unzip
+curl "https://awscli.amazonaws.com/awscli-exe-linux-x86_64.zip" -o awscliv2.zip && unzip awscliv2.zip && sudo ./aws/install
+# Docker Engine: lihat langkah 22 (script yang sama dengan yang dipakai host EC2)
+</x-code>
+
+<h3>Verifikasi</h3>
+<x-code lang="bash">
+docker run --rm hello-world && docker compose version && aws --version && python3 --version
+</x-code>
+<x-out>
+Hello from Docker!
+...
+Docker Compose version v2.35.1
+aws-cli/2.27.x Python/3.13.x Darwin/25.x
+Python 3.12.x
+</x-out>
+
+<details class="errors"><summary>Error yang sering muncul</summary><div class="inner">
+<div class="table-wrap"><table>
+<thead><tr><th>Gejala</th><th>Penyebab</th><th>Solusi</th></tr></thead>
+<tbody>
+<tr><td><code>Cannot connect to the Docker daemon</code></td><td>Docker Desktop belum jalan / user belum masuk grup <code>docker</code></td><td>Jalankan Docker Desktop; di Linux <code>sudo usermod -aG docker $USER</code> lalu logout/login</td></tr>
+<tr><td><code>docker-compose: command not found</code></td><td>Mencari binary v1 yang lama</td><td>Gunakan <code>docker compose</code> (pakai spasi) — plugin v2</td></tr>
+<tr><td>Container mati secara acak</td><td>Batas memori Docker Desktop terlalu kecil</td><td>Settings → Resources → Memory ≥ 6 GB</td></tr>
+</tbody></table></div>
+</div></details>
+</section>

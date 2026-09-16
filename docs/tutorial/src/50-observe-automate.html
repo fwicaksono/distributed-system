@@ -1,0 +1,286 @@
+<section class="step" id="prometheus" data-phase="Observability &amp; otomasi" data-title="Prometheus">
+<dl class="brief">
+  <div><dt>Tujuan</dt><dd>Mengumpulkan metrics dari setiap API, worker, broker, database, cache, dan host; mendefinisikan alert berdasarkan gejala.</dd></div>
+  <div><dt>Kenapa</dt><dd>Dengan lima host dan sebelas proses, “SSH lalu lihat-lihat” sudah tidak memadai. Anda butuh angka dari waktu ke waktu.</dd></div>
+  <div><dt>Prasyarat</dt><dd>Node ops sudah di-deploy; rule SG dari sg-ops sudah ada.</dd></div>
+  <div><dt>Dampak ke arsitektur</dt><dd>Service stateful baru yang harus bisa menjangkau semua — tapi tidak bisa dijangkau oleh semua.</dd></div>
+</dl>
+
+<h3>Metrics, logs, traces; monitoring vs observability</h3>
+<div class="table-wrap"><table>
+<thead><tr><th>Sinyal</th><th>Bentuk</th><th>Menjawab</th><th>Di sini</th></tr></thead>
+<tbody>
+<tr><td>Metrics</td><td>Time series numerik dengan label; murah, bisa diagregasi</td><td>Seberapa banyak? Seberapa cepat? Makin buruk?</td><td>Prometheus</td></tr>
+<tr><td>Logs</td><td>Event diskrit dengan konteks; mahal pada volume besar</td><td>Apa persisnya yang terjadi pada request <em>ini</em>?</td><td>Log JSON dengan <code>request_id</code></td></tr>
+<tr><td>Traces</td><td>Pohon span berwaktu lintas service</td><td>Ke mana 800 ms itu habis?</td><td>Belum (OpenTelemetry — langkah 41)</td></tr>
+</tbody></table></div>
+<p><strong>Monitoring</strong> memeriksa failure mode yang sudah diketahui terhadap threshold: “error rate &gt; 5 %”. <strong>Observability</strong> adalah sifat sistem yang memungkinkan Anda menjelaskan kegagalan yang <em>belum diketahui</em> dari output-nya: “kenapa hanya task milik user yang dibuat Selasa lalu yang lambat?”. Monitoring adalah sesuatu yang Anda lakukan; observability adalah sesuatu yang dimiliki sistem. <strong>Alerting</strong> mengubah monitoring menjadi tindakan — kirim alert untuk gejala yang dirasakan user, bukan untuk setiap penyebab kecil.</p>
+
+<h3>Cara kerja Prometheus</h3>
+<p>Setiap target mengekspos <code>/metrics</code> dalam bentuk teks. Prometheus <em>menarik</em> (pull) data itu setiap 15 detik, menyimpan sampelnya di time-series database lokal, mengevaluasi rule, dan melayani query PromQL. Target yang berhenti menjawab mendapat nilai <code>up == 0</code>: ketiadaan data pun terdeteksi, sesuatu yang tidak bisa dilakukan model push.</p>
+<x-file path="app/core/metrics.py" lang="python"></x-file>
+<x-file path="monitoring/prometheus/prometheus.aws.yml" lang="yaml"></x-file>
+<x-file path="monitoring/prometheus/rules/alerts.yml" lang="yaml"></x-file>
+
+<h3>PromQL yang harus bisa Anda tulis</h3>
+<div class="table-wrap"><table>
+<thead><tr><th>Pertanyaan</th><th>Query</th></tr></thead>
+<tbody>
+<tr><td>Request count / throughput</td><td><code>sum(rate(http_requests_total[5m]))</code></td></tr>
+<tr><td>Per instance</td><td><code>sum by (instance_name) (rate(http_requests_total[5m]))</code></td></tr>
+<tr><td>Error rate</td><td><code>sum(rate(http_requests_total{status=~"5.."}[5m])) / sum(rate(http_requests_total[5m]))</code></td></tr>
+<tr><td>Latency p95</td><td><code>histogram_quantile(0.95, sum by (le) (rate(http_request_duration_seconds_bucket[5m])))</code></td></tr>
+<tr><td>CPU usage</td><td><code>1 - avg by (instance_name) (rate(node_cpu_seconds_total{mode="idle"}[5m]))</code></td></tr>
+<tr><td>Memory usage</td><td><code>1 - node_memory_MemAvailable_bytes / node_memory_MemTotal_bytes</code></td></tr>
+<tr><td>Worker throughput</td><td><code>sum by (outcome) (rate(worker_messages_total[5m]))</code></td></tr>
+<tr><td>Queue depth</td><td><code>rabbitmq_detailed_queue_messages_ready{queue="tasks.process"}</code></td></tr>
+<tr><td>Redis hit ratio</td><td><code>sum(rate(cache_operations_total{result="hit"}[5m])) / sum(rate(cache_operations_total{result=~"hit|miss"}[5m]))</code></td></tr>
+<tr><td>Koneksi database</td><td><code>sum by (state) (pg_stat_activity_count)</code> dan <code>db_pool_connections_in_use</code></td></tr>
+</tbody></table></div>
+
+<x-note kind="warn" title="Cardinality">
+<p>Setiap kombinasi label yang unik adalah time series tersendiri yang disimpan di memori. Middleware memberi label berdasarkan <em>route template</em> (<code>/api/v1/tasks/{task_id}</code>), bukan path. Label berisi user ID atau task ID akan menciptakan jutaan series dan menjatuhkan Prometheus — outage monitoring yang disebabkan oleh monitoring itu sendiri.</p>
+</x-note>
+
+<h3>Verifikasi</h3>
+<x-code lang="bash">
+ssh -N -L 9090:127.0.0.1:9090 tp-ops &
+curl -s localhost:9090/api/v1/targets | jq -r '.data.activeTargets[] | "\(.labels.job)\t\(.labels.instance)\t\(.health)"' | column -t
+curl -s localhost:9090/api/v1/rules | jq -r '.data.groups[].rules[] | select(.type=="alerting") | "\(.name)\t\(.state)"'
+</x-code>
+<x-out>
+api              10.20.1.10:8000       up
+api              10.20.11.20:8000      up
+api              10.20.11.20:8001      up
+worker           10.20.11.30:9101      up
+worker           worker-2:9101         up
+rabbitmq         10.20.11.30:15692     up
+postgres         10.20.11.50:9187      up
+redis            10.20.11.50:9121      up
+node             10.20.1.10:9100       up
+...
+TargetDown       inactive
+HighErrorRate    inactive
+</x-out>
+<details class="errors"><summary>Error yang sering muncul</summary><div class="inner">
+<ul>
+<li>Target <code>down</code>, <code>context deadline exceeded</code> — SG atau ufw memblokir port (timeout).</li>
+<li>Target <code>down</code>, <code>connection refused</code> — exporter tidak berjalan atau bind ke interface lain.</li>
+<li>Panel queue kosong — metrics per queue berasal dari <code>/metrics/detailed</code>; cek job <code>rabbitmq-queues</code>.</li>
+<li><code>histogram_quantile</code> menghasilkan NaN — tidak ada traffic di jendela waktu itu, atau label <code>le</code> hilang di <code>sum by</code>.</li>
+</ul>
+</div></details>
+</section>
+
+<section class="step" id="grafana" data-phase="Observability &amp; otomasi" data-title="Grafana">
+<dl class="brief">
+  <div><dt>Tujuan</dt><dd>Dashboard as code, di-provision otomatis, menjawab “sehat atau tidak?” dalam lima detik.</dd></div>
+  <div><dt>Kenapa</dt><dd>Metrics yang tidak pernah dilihat hanyalah biaya.</dd></div>
+  <div><dt>Prasyarat</dt><dd>Langkah 31.</dd></div>
+  <div><dt>Dampak ke arsitektur</dt><dd>Tidak ada di jalur request; besar pengaruhnya pada kemampuan Anda mengoperasikan sistem.</dd></div>
+</dl>
+
+<x-file path="monitoring/grafana/provisioning/datasources/prometheus.yml" lang="yaml"></x-file>
+<x-file path="monitoring/grafana/provisioning/dashboards/dashboards.yml" lang="yaml"></x-file>
+
+<h3>Tiga dashboard</h3>
+<div class="table-wrap"><table>
+<thead><tr><th>Dashboard</th><th>Dilihat ketika</th><th>Panel utama</th></tr></thead>
+<tbody>
+<tr><td>API Overview</td><td>User komplain; setiap selesai deploy</td><td>RPS, rasio 5xx, p95, instance up; RPS per instance (stacked — pembagian rata membuktikan round robin); latency p50/p95/p99; cache hit ratio; DB pool</td></tr>
+<tr><td>Workers &amp; Queue</td><td>Task lambat selesai</td><td>Tile ready / unacked / consumer / DLQ; depth per queue termasuk retry queue; throughput per outcome; completed per worker</td></tr>
+<tr><td>Infrastructure</td><td>Selain dua di atas</td><td>CPU, memori, disk per host; CPU steal (credit t3); CPU/memori container; koneksi &amp; TPS PostgreSQL; memori dan eviction Redis</td></tr>
+</tbody></table></div>
+<x-code lang="bash" title="Dashboard di-generate, bukan diklik">
+python3 monitoring/grafana/generate_dashboards.py
+git diff monitoring/grafana/dashboards/     # perubahan PromQL bisa di-review
+</x-code>
+
+<h3>Akses</h3>
+<x-code lang="bash">
+ssh -N -L 3000:127.0.0.1:3000 tp-ops
+aws ssm get-parameter --name /taskplatform/prod/GRAFANA_ADMIN_PASSWORD --with-decryption --query Parameter.Value --output text
+open http://localhost:3000          # admin / <password> → Dashboards → Task Platform
+</x-code>
+<p>Grafana sengaja tidak diekspos ke publik. Jika tim membutuhkannya, tempatkan di belakang Nginx edge dengan hostname sendiri, TLS, IP allow-list, dan SSO — dashboard membocorkan arsitektur, volume traffic, dan detail error.</p>
+
+<details class="errors"><summary>Error yang sering muncul</summary><div class="inner">
+<ul>
+<li>“Datasource not found” di panel — <code>uid</code> datasource di JSON harus <code>prometheus</code>.</li>
+<li>Dashboard tidak muncul — path yang di-mount berbeda dengan <code>options.path</code>; cek <code>docker logs grafana | grep provisioning</code>.</li>
+<li>Password admin diabaikan — Grafana menyimpannya saat start pertama di <code>/data/grafana</code>; reset dengan <code>grafana cli admin reset-admin-password</code>.</li>
+</ul>
+</div></details>
+</section>
+
+<section class="step" id="cicd" data-phase="Observability &amp; otomasi" data-title="CI/CD">
+<dl class="brief">
+  <div><dt>Tujuan</dt><dd>Merancang pipeline di mana setiap perubahan ke <code>main</code> dites, dikemas sekali, di-deploy dengan aman, diverifikasi, dan bisa dikembalikan.</dd></div>
+  <div><dt>Kenapa</dt><dd>Deploy manual ke lima host itu lambat, tidak konsisten, dan tidak bisa dilacak.</dd></div>
+  <div><dt>Prasyarat</dt><dd>Kode di GitHub; IAM dari langkah 16.</dd></div>
+  <div><dt>Dampak ke arsitektur</dt><dd>Proses deployment itu sendiri menjadi sistem yang ter-versi dan ter-audit.</dd></div>
+</dl>
+
+<x-code lang="text">
+GitHub push ─▶ Actions
+   1 checkout ─ 2 install ─ 3 lint/type-check ─ 4 unit + integration test
+   5 build image ─ 6 tag = git SHA ─ 7 push ke ECR
+   8 deploy lewat SSM: migrate → broker → ops → app (rolling) → edge
+   9 health check lewat DNS + TLS; setiap instance melaporkan versi baru
+   ✗ satu langkah gagal → pipeline berhenti; gagal di level host → rollback otomatis di host itu
+</x-code>
+
+<div class="table-wrap"><table>
+<thead><tr><th>Prinsip</th><th>Penerapannya</th></tr></thead>
+<tbody>
+<tr><td>Build once, deploy many</td><td>Satu image per commit; byte yang sama dikirim ke setiap node</td></tr>
+<tr><td>Artifact immutable dan bisa dilacak</td><td>Tag = SHA 12 karakter; tag ECR immutable; <code>/health/live</code> melaporkan SHA</td></tr>
+<tr><td>Konfigurasi ikut bersama kode</td><td>File compose dan konfigurasi service dimasukkan ke image di <code>/opt/bundle</code></td></tr>
+<tr><td>Secret tidak pernah lewat pipeline</td><td>Host membaca Parameter Store dengan role miliknya sendiri saat deploy</td></tr>
+<tr><td>Tanpa cloud credential yang disimpan</td><td>GitHub OIDC → STS → session 1 jam</td></tr>
+<tr><td>Urutan yang aman</td><td>Schema dulu (backward compatible), consumer sebelum producer, satu host dan satu container setiap kali</td></tr>
+<tr><td>Verifikasi dari luar</td><td>Pengecekan terakhir lewat DNS, TLS, dan Nginx, persis seperti user</td></tr>
+</tbody></table></div>
+
+<h3>Cara kerja rollback</h3>
+<ol>
+<li><strong>Otomatis, per host</strong>: <code>deploy.sh</code> menunggu container healthy dan memverifikasi endpoint. Jika gagal, ia mengarahkan ulang <code>/opt/taskplatform/current</code> ke release sebelumnya dan men-deploy-nya, lalu menggagalkan SSM command, sehingga pipeline ikut gagal.</li>
+<li><strong>Manual, seluruh fleet</strong>: jalankan workflow <code>rollback</code> dengan SHA sebelumnya. Karena image immutable, tidak ada yang di-build ulang — kode dan konfigurasi kembali persis.</li>
+<li><strong>Database</strong>: tidak di-rollback. Migration mengikuti pola expand/contract sehingga release sebelumnya tetap berjalan dengan schema baru. Migration destruktif (drop kolom) baru dikirim setelah tidak ada release aktif yang membacanya.</li>
+</ol>
+<p>Alternatif: <strong>blue/green</strong> (dua environment penuh, pindahkan traffic — butuh kapasitas ganda atau load balancer yang bisa memindahkan traffic), <strong>canary</strong> (kirim 5 % traffic ke versi baru, bandingkan metrics — butuh weighted routing dan metrics yang baik).</p>
+</section>
+
+<section class="step" id="github-actions" data-phase="Observability &amp; otomasi" data-title="GitHub Actions">
+<dl class="brief">
+  <div><dt>Tujuan</dt><dd>Mengimplementasikan pipeline dan menghubungkan GitHub ke AWS tanpa secret.</dd></div>
+  <div><dt>Kenapa</dt><dd>Berjalan di samping kode, gratis untuk repository publik, dukungan OIDC kelas satu.</dd></div>
+  <div><dt>Prasyarat</dt><dd>Langkah 33; ARN deploy role dari script 03.</dd></div>
+  <div><dt>Dampak ke arsitektur</dt><dd>GitHub menjadi operator (terbatas) untuk akun AWS Anda.</dd></div>
+</dl>
+
+<x-file path=".github/workflows/pipeline.yml" lang="yaml"></x-file>
+<x-file path=".github/scripts/ssm-deploy.sh" lang="bash"></x-file>
+
+<h3>Konfigurasi repository</h3>
+<ol>
+<li><strong>Settings → Secrets and variables → Actions → Variables → New repository variable</strong>: <code>AWS_REGION</code>, <code>AWS_DEPLOY_ROLE_ARN</code>, <code>ECR_REPOSITORY=taskplatform</code>, <code>PUBLIC_BASE_URL=https://api.example.com</code>. Ini bukan secret — role tersebut hanya bisa di-assume dari repository ini.</li>
+<li><strong>Settings → Environments → New environment</strong> <code>production</code>. Opsional: <em>Required reviewers</em> (gerbang approval manual), <em>Deployment branches: main only</em>.</li>
+<li><strong>Settings → Branches → Add branch ruleset</strong> untuk <code>main</code>: wajib pull request, wajib status check <code>Lint &amp; unit tests</code> dan <code>Integration tests</code>.</li>
+</ol>
+
+<h3>Verifikasi</h3>
+<x-code lang="bash">
+git checkout -b feature/readme-typo && git commit --allow-empty -m "test pipeline" && git push -u origin HEAD
+gh pr create --fill && gh pr checks --watch     # quality, integration, build (tanpa push)
+gh pr merge --squash                            # main: + push + deploy
+gh run watch
+</x-code>
+<x-out>
+✓ Lint & unit tests        1m12s
+✓ Integration tests        1m48s
+✓ Build image & push to ECR  2m05s
+✓ Deploy to EC2            4m31s
+</x-out>
+<details class="errors"><summary>Error yang sering muncul</summary><div class="inner">
+<ul>
+<li><code>Could not assume role with OIDC: Not authorized</code> — <code>sub</code> di trust policy tidak cocok (huruf besar/kecil nama repo, branch, environment).</li>
+<li><code>no instances matched tag Role=app</code> — tag instance hilang, atau SSM agent offline (NAT mati).</li>
+<li>Step deploy menggantung — SSM command menunggu di host yang <code>docker compose --wait</code>-nya tidak pernah healthy; baca output yang dicetak.</li>
+<li>Job integration: <code>connection refused</code> ke localhost:5432 — service container belum healthy; health option mengatur kesiapannya.</li>
+</ul>
+</div></details>
+</section>
+
+<section class="step" id="container-registry" data-phase="Observability &amp; otomasi" data-title="Container Registry">
+<dl class="brief">
+  <div><dt>Tujuan</dt><dd>Memilih dan mengonfigurasi registry tempat artifact release disimpan.</dd></div>
+  <div><dt>Kenapa</dt><dd>Registry adalah tempat “apa yang bisa di-deploy” tinggal; model aksesnya bagian dari keamanan supply chain Anda.</dd></div>
+  <div><dt>Prasyarat</dt><dd>Langkah 16.</dd></div>
+  <div><dt>Dampak ke arsitektur</dt><dd>Setiap node bergantung padanya untuk deploy (bukan untuk melayani traffic).</dd></div>
+</dl>
+
+<div class="table-wrap"><table>
+<thead><tr><th></th><th>Amazon ECR (dipilih)</th><th>GitHub Container Registry</th></tr></thead>
+<tbody>
+<tr><td>Auth dari EC2</td><td>Instance role — tidak ada yang disimpan di host</td><td>Token GitHub di setiap host</td></tr>
+<tr><td>Auth dari CI</td><td>Role OIDC</td><td><code>GITHUB_TOKEN</code> bawaan — paling sederhana</td></tr>
+<tr><td>Jaringan</td><td>Pull tetap di dalam AWS; layer lewat S3 gateway endpoint yang gratis</td><td>Pull lewat internet melewati NAT (biaya data NAT)</td></tr>
+<tr><td>Fitur</td><td>Immutable tag, scan on push, lifecycle policy, replikasi</td><td>Terlihat di samping kode, image publik gratis</td></tr>
+<tr><td>Biaya</td><td>~$0,10/GB-bulan storage</td><td>Gratis untuk publik; kuota termasuk untuk privat</td></tr>
+<tr><td>Pilih ketika</td><td>Deploy ke AWS dan ingin akses murni lewat IAM</td><td>Image open source, multi-cloud, tanpa AWS</td></tr>
+</tbody></table></div>
+
+<h3>Console</h3>
+<ol>
+<li><strong>ECR → Private registry → Repositories → Create repository</strong>. Name <code>taskplatform</code>. Image tag mutability <strong>Immutable</strong> (tag SHA tidak pernah bisa ditimpa — yang dites adalah yang di-deploy). Encryption AES-256. <em>Scan on push</em>: aktif (basic scanning).</li>
+<li>Repository → <strong>Lifecycle Policy → Create rule</strong>: priority 1, image status <em>Any</em>, “Image count more than” 20 → expire. Menjaga storage tetap terbatas dan menyisakan 20 target rollback.</li>
+</ol>
+
+<h3>Verifikasi</h3>
+<x-code lang="bash">
+aws ecr describe-images --repository-name taskplatform \
+  --query 'sort_by(imageDetails,&imagePushedAt)[-5:].[imageTags[0],imagePushedAt,imageSizeInBytes]' --output table
+aws ecr describe-image-scan-findings --repository-name taskplatform --image-id imageTag=<sha> \
+  --query 'imageScanFindings.findingSeverityCounts'
+</x-code>
+</section>
+
+<section class="step" id="automated-deployment" data-phase="Observability &amp; otomasi" data-title="Automated Deployment">
+<dl class="brief">
+  <div><dt>Tujuan</dt><dd>Paham persis apa yang terjadi di setiap host selama deploy, dan membuktikan rolling update tanpa downtime.</dd></div>
+  <div><dt>Kenapa</dt><dd>Ketika deploy gagal jam 2 pagi, Anda perlu tahu script mana, di host mana, melakukan apa.</dd></div>
+  <div><dt>Prasyarat</dt><dd>Langkah 34 hijau.</dd></div>
+  <div><dt>Dampak ke arsitektur</dt><dd>Setiap host menyimpan beberapa release terakhir di disk dan bisa melakukan rollback sendiri.</dd></div>
+</dl>
+
+<x-file path="deploy/scripts/remote-deploy.sh" lang="bash"></x-file>
+<x-file path="deploy/scripts/deploy.sh" lang="bash"></x-file>
+<x-file path=".github/workflows/rollback.yml" lang="yaml"></x-file>
+
+<h3>Layout di host setelah tiga kali deploy</h3>
+<x-code lang="text">
+/opt/taskplatform/
+├── current -> releases/9b2e41c0aa17
+├── previous                  (isi: 3f9a1c2b7d4e)
+├── releases/
+│   ├── 9b2e41c0aa17/{deploy,nginx,monitoring,config}
+│   ├── 3f9a1c2b7d4e/...
+│   └── 1c7d0e9f2b3a/...
+└── shared/
+    ├── node.env              0600  setting host yang statis
+    └── app.env               0600  di-render dari Parameter Store saat deploy ini
+</x-code>
+
+<h3>Buktikan rolling update tanpa downtime</h3>
+<x-code lang="bash">
+# Terminal 1: traffic konstan, cetak setiap response selain 200
+while true; do c=$(curl -s -o /dev/null -w '%{http_code}' https://api.example.com/health/live); [ "$c" != 200 ] && date +%T" $c"; sleep 0.1; done
+# Terminal 2: picu deploy
+git commit --allow-empty -m "rolling deploy test" && git push
+</x-code>
+<p>Yang diharapkan: terminal 1 tidak mencetak apa pun untuk request GET. Kenapa bisa: uvicorn menguras request yang sedang berjalan saat SIGTERM; Nginx me-retry GET yang mengenai container yang sedang restart; hanya satu dari tiga upstream yang restart pada satu waktu. Celah yang tersisa: <code>edge</code> membuat ulang container Nginx itu sendiri, yang memutus koneksi sekitar satu detik — setup production memakai <code>nginx -s reload</code> untuk perubahan konfigurasi saja, atau load balancer di depannya.</p>
+
+<h3>Paksa rollback</h3>
+<x-code lang="bash">
+# Kirim konfigurasi yang rusak: host database mengarah ke alamat yang tidak ada.
+git checkout -b break-deploy
+sed -i 's/POSTGRES_HOST: ${DATA_IP:?}/POSTGRES_HOST: 10.20.11.99/' deploy/compose/common.yml
+git commit -am "deliberately broken release" && git push   # merge ke main untuk deploy
+</x-code>
+<x-out>
+2026-09-15T11:20:04Z [deploy:app] updating api-2
+ ✔ Container taskplatform-api-2-1  Healthy        # liveness lolos: prosesnya hidup
+2026-09-15T11:20:26Z [deploy:app] updating api-3
+ ✔ Container taskplatform-api-3-1  Healthy
+2026-09-15T11:21:28Z [deploy:app] health check FAILED — rolling back to 9b2e41c0aa17
+2026-09-15T11:21:55Z [deploy:app] release 9b2e41c0aa17 is live (previous: 9b2e41c0aa17)
+2026-09-15T11:21:55Z [deploy:app] ERROR: deployment of 5d0c3e1f7a92 failed; rolled back to 9b2e41c0aa17
+::error::deploy of app finished with status Failed
+</x-out>
+<p>Liveness lolos (prosesnya berjalan) tetapi readiness gagal (tidak bisa menjangkau PostgreSQL) — persis perbedaan yang dibahas di langkah 6. Karena file compose ikut di dalam image, rollback ke image sebelumnya memulihkan <code>POSTGRES_HOST</code> yang benar. Node edge tidak pernah tersentuh: pipeline berhenti di 8d. Revert commit tersebut di <code>main</code> setelahnya.</p>
+<x-note kind="warn" title="Yang tidak bisa diperbaiki rollback">
+<p>Secret dan parameter tinggal di Parameter Store, di luar image. Seandainya yang dirusak adalah <code>/taskplatform/prod/POSTGRES_PASSWORD</code>, rollback akan me-render nilai rusak yang sama dan ikut gagal. Karena itulah hanya secret yang tinggal di luar release, dan histori Parameter Store penting: <code>aws ssm get-parameter-history --name /taskplatform/prod/POSTGRES_PASSWORD --with-decryption</code>.</p>
+<p>Perhatikan juga jendela waktunya: antara api-2 baru start dan rollback, Nginx mengirim request ke instance yang live tapi belum ready. Nginx OSS tidak punya active readiness check; health check target group ALB pada <code>/health/ready</code> akan menjauhkannya dari rotasi.</p>
+</x-note>
+</section>

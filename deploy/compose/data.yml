@@ -1,0 +1,71 @@
+# DATA node (private subnet): PostgreSQL and Redis — the stateful core.
+# Data lives on a SEPARATE EBS volume mounted at /data (see tutorial: Linux → disks), so the
+# instance can be replaced without losing the database.
+#
+# This node is the biggest single point of failure in the design. Production upgrade:
+# Amazon RDS Multi-AZ + ElastiCache (see README → Production improvements).
+
+name: taskplatform
+
+services:
+  postgres:
+    image: postgres:17-alpine
+    restart: unless-stopped
+    command: ["postgres", "-c", "config_file=/etc/postgresql/postgresql.conf",
+              "-c", "hba_file=/etc/postgresql/pg_hba.conf"]
+    env_file: [/opt/taskplatform/shared/postgres.env]   # POSTGRES_DB / USER / PASSWORD
+    ports: ["${PRIVATE_IP:?}:5432:5432"]            # from sg-edge, sg-app, sg-broker, sg-ops
+    volumes:
+      - /data/postgres:/var/lib/postgresql/data
+      - ../../config/postgres/postgresql.conf:/etc/postgresql/postgresql.conf:ro
+      - ../../config/postgres/pg_hba.conf:/etc/postgresql/pg_hba.conf:ro
+      - ../../config/postgres/initdb:/docker-entrypoint-initdb.d:ro
+    shm_size: 256mb
+    # Give PostgreSQL time to checkpoint and shut down cleanly (default 10s can be too short).
+    stop_grace_period: 60s
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
+      interval: 10s
+      timeout: 3s
+      retries: 10
+    logging:
+      driver: json-file
+      options: { max-size: "20m", max-file: "5" }
+
+  redis:
+    image: redis:7.4-alpine
+    restart: unless-stopped
+    env_file: [/opt/taskplatform/shared/redis.env]   # REDIS_PASSWORD
+    command: ["sh", "-c", "exec redis-server /usr/local/etc/redis/redis.conf --requirepass \"$$REDIS_PASSWORD\""]
+    ports: ["${PRIVATE_IP:?}:6379:6379"]            # from sg-edge, sg-app, sg-broker, sg-ops
+    volumes:
+      - ../../config/redis/redis.conf:/usr/local/etc/redis/redis.conf:ro
+    healthcheck:
+      test: ["CMD-SHELL", "redis-cli -a \"$$REDIS_PASSWORD\" --no-auth-warning ping | grep -q PONG"]
+      interval: 10s
+      timeout: 3s
+      retries: 10
+    logging:
+      driver: json-file
+      options: { max-size: "10m", max-file: "3" }
+
+  postgres-exporter:
+    image: quay.io/prometheuscommunity/postgres-exporter:v0.17.1
+    restart: unless-stopped
+    env_file: [/opt/taskplatform/shared/postgres.env]   # DATA_SOURCE_USER / DATA_SOURCE_PASS
+    environment:
+      DATA_SOURCE_URI: "postgres:5432/taskplatform?sslmode=disable"
+    ports: ["${PRIVATE_IP:?}:9187:9187"]
+    depends_on: [postgres]
+
+  redis-exporter:
+    image: oliver006/redis_exporter:v1.67.0
+    restart: unless-stopped
+    env_file: [/opt/taskplatform/shared/redis.env]   # REDIS_PASSWORD is read natively
+    environment:
+      REDIS_ADDR: redis://redis:6379
+    ports: ["${PRIVATE_IP:?}:9121:9121"]
+    depends_on: [redis]
+
+  node-exporter:
+    extends: { file: common.yml, service: node-exporter }

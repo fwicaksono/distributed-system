@@ -1,0 +1,48 @@
+[project]
+name = "distributed-task-platform"
+version = "1.0.0"
+description = "Production-style distributed task processing platform (FastAPI, PostgreSQL, Redis, RabbitMQ, Nginx, AWS EC2)"
+readme = "README.md"
+requires-python = ">=3.11"
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+extend-exclude = ["migrations/versions"]
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "B", "UP", "ASYNC", "S", "SIM", "RUF"]
+ignore = [
+    "S101",   # assert is fine in tests
+    "B008",   # FastAPI Depends() in defaults is idiomatic
+    "S311",   # random is used for jitter/simulation, not crypto
+    "RUF012",
+    "S105",   # false positives on names like token_type
+]
+
+[tool.ruff.lint.isort]
+known-first-party = ["app", "tests"]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/**" = ["S105", "S106"]
+"docs/**" = ["E501"]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+asyncio_default_fixture_loop_scope = "function"
+testpaths = ["tests"]
+markers = [
+    "integration: requires running PostgreSQL, Redis and RabbitMQ",
+]
+addopts = "-ra"
+
+[tool.mypy]
+python_version = "3.11"
+plugins = ["pydantic.mypy"]
+ignore_missing_imports = true
+warn_unused_ignores = true
+check_untyped_defs = true
+
+[tool.coverage.run]
+source = ["app"]
+omit = ["app/workers/main.py"]

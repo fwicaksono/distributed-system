@@ -1,0 +1,55 @@
+# Manual rollback: redeploy an image that is already in ECR (no rebuild).
+#
+# Because images are immutable and tagged by commit SHA, "rollback" is simply "deploy an
+# older tag". The deployment bundle (compose + configs) inside that image rolls back too.
+#
+# Caveat: this does NOT roll back database migrations. Migrations are written to be
+# backward compatible (expand -> migrate -> contract), so older code keeps working.
+
+name: rollback
+
+on:
+  workflow_dispatch:
+    inputs:
+      image_tag:
+        description: "Image tag to deploy (12-char git SHA from a previous successful run)"
+        required: true
+      roles:
+        description: "Roles to roll back, in order"
+        required: true
+        default: "broker ops app edge"
+
+permissions:
+  contents: read
+  id-token: write
+
+concurrency:
+  group: pipeline-refs/heads/main   # shares the lock with deployments from pipeline.yml
+
+jobs:
+  rollback:
+    runs-on: ubuntu-24.04
+    environment: production
+    env:
+      AWS_REGION: ${{ vars.AWS_REGION }}
+      TAG: ${{ inputs.image_tag }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ vars.AWS_DEPLOY_ROLE_ARN }}
+          aws-region: ${{ vars.AWS_REGION }}
+
+      - name: Verify the image exists in ECR
+        run: |
+          aws ecr describe-images --repository-name "${{ vars.ECR_REPOSITORY }}" \
+            --image-ids imageTag="$TAG" --query 'imageDetails[0].imagePushedAt' --output text
+
+      - name: Redeploy
+        run: |
+          for role in ${{ inputs.roles }}; do
+            .github/scripts/ssm-deploy.sh "$role" "$TAG"
+          done
+
+      - name: Health check
+        run: curl -fsS --retry 10 --retry-delay 5 --retry-all-errors "${{ vars.PUBLIC_BASE_URL }}/health/ready"

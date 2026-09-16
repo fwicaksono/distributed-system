@@ -1,0 +1,277 @@
+# =====================================================================================
+# Local "distributed system on one laptop".
+#
+#   docker compose up -d --build          # full stack
+#   docker compose --profile loadtest run --rm k6 run /scripts/normal.js
+#
+# Networks model the AWS security boundaries:
+#   edge     : nginx <-> APIs                      (≈ public subnet / sg-edge)
+#   backend  : APIs, workers <-> data services     (≈ private subnet / sg-app, sg-data)
+#   metrics  : prometheus <-> every exporter       (≈ sg-ops)
+# Nginx is NOT on `backend`, so it cannot reach PostgreSQL even if misconfigured.
+# =====================================================================================
+
+name: taskplatform
+
+x-app-image: &app-image
+  image: taskplatform:local
+  build:
+    context: .
+    args:
+      APP_VERSION: local
+
+x-app-env: &app-env
+  env_file: .env
+
+x-logging: &default-logging
+  # Without rotation, container logs grow until the disk is full (a classic outage).
+  driver: json-file
+  options:
+    max-size: "10m"
+    max-file: "3"
+
+x-api: &api
+  <<: [*app-image, *app-env]
+  restart: unless-stopped
+  stop_grace_period: 30s
+  depends_on:
+    migrate:
+      condition: service_completed_successfully
+    redis:
+      condition: service_healthy
+    rabbitmq:
+      condition: service_healthy
+  networks: [edge, backend, metrics]
+  logging: *default-logging
+  deploy:
+    resources:
+      limits: { cpus: "1.0", memory: 512M }
+
+x-worker: &worker
+  <<: [*app-image, *app-env]
+  command: ["python", "-m", "app.workers.main"]
+  restart: unless-stopped
+  stop_grace_period: 30s
+  healthcheck:
+    test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:9101/metrics', timeout=2)"]
+    interval: 15s
+    timeout: 3s
+    retries: 3
+    start_period: 20s
+  depends_on:
+    migrate:
+      condition: service_completed_successfully
+    rabbitmq:
+      condition: service_healthy
+  networks: [backend, metrics]
+  logging: *default-logging
+  deploy:
+    resources:
+      limits: { cpus: "1.0", memory: 512M }
+
+services:
+  # ---------------------------------------------------------------- data services
+  postgres:
+    image: postgres:17-alpine
+    restart: unless-stopped
+    command: ["postgres", "-c", "config_file=/etc/postgresql/postgresql.conf",
+              "-c", "hba_file=/etc/postgresql/pg_hba.conf"]
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB}
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+      - ./config/postgres/postgresql.conf:/etc/postgresql/postgresql.conf:ro
+      - ./config/postgres/pg_hba.conf:/etc/postgresql/pg_hba.conf:ro
+      - ./config/postgres/initdb:/docker-entrypoint-initdb.d:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+    # Published on localhost only, for psql / EXPLAIN ANALYZE exercises from the host.
+    ports: ["127.0.0.1:5432:5432"]
+    shm_size: 256mb
+    networks: [backend]
+    logging: *default-logging
+
+  redis:
+    image: redis:7.4-alpine
+    restart: unless-stopped
+    command: ["redis-server", "/usr/local/etc/redis/redis.conf", "--requirepass", "${REDIS_PASSWORD}"]
+    volumes:
+      - ./config/redis/redis.conf:/usr/local/etc/redis/redis.conf:ro
+    healthcheck:
+      test: ["CMD-SHELL", "redis-cli -a \"$${REDIS_PASSWORD}\" --no-auth-warning ping | grep -q PONG"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+    environment:
+      REDIS_PASSWORD: ${REDIS_PASSWORD}
+    networks: [backend]
+    logging: *default-logging
+
+  rabbitmq:
+    image: rabbitmq:4.1-management-alpine
+    restart: unless-stopped
+    hostname: rabbitmq  # RabbitMQ stores data per node name; a stable hostname keeps queues
+    environment:
+      RABBITMQ_DEFAULT_USER: ${RABBITMQ_USER}
+      RABBITMQ_DEFAULT_PASS: ${RABBITMQ_PASSWORD}
+    volumes:
+      - rabbitmq-data:/var/lib/rabbitmq
+      - ./config/rabbitmq/rabbitmq.conf:/etc/rabbitmq/conf.d/90-taskplatform.conf:ro
+      - ./config/rabbitmq/enabled_plugins:/etc/rabbitmq/enabled_plugins:ro
+    healthcheck:
+      test: ["CMD", "rabbitmq-diagnostics", "-q", "ping"]
+      interval: 10s
+      timeout: 10s
+      retries: 10
+      start_period: 20s
+    ports: ["127.0.0.1:15672:15672"]  # management UI, localhost only
+    networks: [backend, metrics]
+    logging: *default-logging
+
+  # ---------------------------------------------------------------- one-off migration job
+  migrate:
+    <<: [*app-image, *app-env]
+    command: ["alembic", "upgrade", "head"]
+    restart: "no"
+    depends_on:
+      postgres:
+        condition: service_healthy
+    networks: [backend]
+
+  # ---------------------------------------------------------------- stateless API tier
+  api-1:
+    <<: *api
+    environment: { INSTANCE_ID: api-1 }
+  api-2:
+    <<: *api
+    environment: { INSTANCE_ID: api-2 }
+  api-3:
+    <<: *api
+    environment: { INSTANCE_ID: api-3 }
+
+  # ---------------------------------------------------------------- background workers
+  worker-1:
+    <<: *worker
+    environment: { INSTANCE_ID: worker-1 }
+  worker-2:
+    <<: *worker
+    environment: { INSTANCE_ID: worker-2 }
+
+  # ---------------------------------------------------------------- reverse proxy / LB
+  nginx:
+    image: nginx:1.28-alpine
+    restart: unless-stopped
+    ports: ["8080:80"]
+    volumes:
+      - ./nginx/nginx.conf:/etc/nginx/nginx.conf:ro
+      - ./nginx/snippets:/etc/nginx/snippets:ro
+      - ./nginx/conf.d/local.conf:/etc/nginx/conf.d/default.conf:ro
+      - ./nginx/upstreams:/etc/nginx/upstreams:ro
+    depends_on: [api-1, api-2, api-3]
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1/nginx-health"]
+      interval: 10s
+      timeout: 3s
+      retries: 3
+    networks: [edge, metrics]
+    logging: *default-logging
+
+  # ---------------------------------------------------------------- observability
+  prometheus:
+    image: prom/prometheus:v3.4.0
+    restart: unless-stopped
+    command:
+      - --config.file=/etc/prometheus/prometheus.yml
+      - --storage.tsdb.retention.time=7d
+      - --web.enable-lifecycle
+    volumes:
+      - ./monitoring/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - ./monitoring/prometheus/rules:/etc/prometheus/rules:ro
+      - prometheus-data:/prometheus
+    ports: ["127.0.0.1:9090:9090"]
+    networks: [metrics]
+    logging: *default-logging
+
+  grafana:
+    image: grafana/grafana:12.0.0
+    restart: unless-stopped
+    environment:
+      GF_SECURITY_ADMIN_USER: ${GRAFANA_ADMIN_USER}
+      GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_ADMIN_PASSWORD}
+      GF_USERS_ALLOW_SIGN_UP: "false"
+      GF_ANALYTICS_REPORTING_ENABLED: "false"
+      PROMETHEUS_URL: http://prometheus:9090
+    volumes:
+      - ./monitoring/grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./monitoring/grafana/dashboards:/var/lib/grafana/dashboards:ro
+      - grafana-data:/var/lib/grafana
+    ports: ["127.0.0.1:3000:3000"]
+    depends_on: [prometheus]
+    networks: [metrics]
+    logging: *default-logging
+
+  node-exporter:
+    image: prom/node-exporter:v1.9.1
+    restart: unless-stopped
+    command: ["--path.rootfs=/host"]
+    pid: host
+    volumes: ["/:/host:ro,rslave"]
+    networks: [metrics]
+
+  cadvisor:
+    image: gcr.io/cadvisor/cadvisor:v0.49.1
+    restart: unless-stopped
+    privileged: true
+    devices: ["/dev/kmsg"]
+    volumes:
+      - /:/rootfs:ro
+      - /var/run:/var/run:ro
+      - /sys:/sys:ro
+      - /var/lib/docker/:/var/lib/docker:ro
+    networks: [metrics]
+
+  postgres-exporter:
+    image: quay.io/prometheuscommunity/postgres-exporter:v0.17.1
+    restart: unless-stopped
+    environment:
+      DATA_SOURCE_URI: "postgres:5432/${POSTGRES_DB}?sslmode=disable"
+      DATA_SOURCE_USER: ${POSTGRES_USER}
+      DATA_SOURCE_PASS: ${POSTGRES_PASSWORD}
+    depends_on: [postgres]
+    networks: [backend, metrics]
+
+  redis-exporter:
+    image: oliver006/redis_exporter:v1.67.0
+    restart: unless-stopped
+    environment:
+      REDIS_ADDR: redis://redis:6379
+      REDIS_PASSWORD: ${REDIS_PASSWORD}
+    depends_on: [redis]
+    networks: [backend, metrics]
+
+  # ---------------------------------------------------------------- load testing (opt-in)
+  k6:
+    image: grafana/k6:1.0.0
+    profiles: ["loadtest"]
+    environment:
+      BASE_URL: http://nginx
+    volumes:
+      - ./loadtest/k6:/scripts:ro
+      - ./loadtest/results:/results
+    networks: [edge]
+
+networks:
+  edge:
+  backend:
+  metrics:
+
+volumes:
+  postgres-data:
+  rabbitmq-data:
+  prometheus-data:
+  grafana-data:

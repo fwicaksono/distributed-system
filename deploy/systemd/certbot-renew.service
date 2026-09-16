@@ -1,0 +1,15 @@
+[Unit]
+Description=Renew Let's Encrypt certificates and reload Nginx
+Requires=docker.service
+After=docker.service
+
+[Service]
+Type=oneshot
+EnvironmentFile=/opt/taskplatform/shared/node.env
+WorkingDirectory=/opt/taskplatform/current/deploy/compose
+# `certbot renew` only renews certificates within 30 days of expiry (they last 90 days),
+# so running it twice a day is cheap and safe. After renewal, Nginx must reload to use the
+# new files: `nginx -s reload` is graceful (no dropped connections).
+ExecStart=/bin/sh -c 'export IMAGE_TAG=$(basename "$(readlink /opt/taskplatform/current)"); \
+  docker compose --env-file /opt/taskplatform/shared/node.env -f edge.yml --profile certbot run --rm certbot renew --webroot -w /var/www/certbot --quiet && \
+  docker compose --env-file /opt/taskplatform/shared/node.env -f edge.yml exec -T nginx nginx -s reload'

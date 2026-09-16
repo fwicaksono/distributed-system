@@ -1,0 +1,30 @@
+# Brings this node's containers up at boot, using the currently deployed release.
+#
+# Docker's `restart: unless-stopped` already restarts containers when dockerd starts, so
+# why a unit? (1) explicit ordering after the network and the /data mount, (2) one command
+# for operators: `systemctl status|restart taskplatform`, (3) logs in journald:
+# `journalctl -u taskplatform -b`.
+#
+# Install: cp to /etc/systemd/system/ && systemctl daemon-reload && systemctl enable taskplatform
+
+[Unit]
+Description=Task Platform containers for this node
+Documentation=file:///opt/taskplatform/current/deploy/scripts/deploy.sh
+Requires=docker.service
+After=docker.service network-online.target
+Wants=network-online.target
+# Wait for the data volume when it exists (nofail mount in /etc/fstab).
+RequiresMountsFor=/opt/taskplatform
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+EnvironmentFile=/opt/taskplatform/shared/node.env
+WorkingDirectory=/opt/taskplatform/current/deploy/compose
+ExecStart=/bin/sh -c 'IMAGE_TAG=$(basename "$(readlink /opt/taskplatform/current)") exec docker compose --env-file /opt/taskplatform/shared/node.env -f ${ROLE}.yml up -d --remove-orphans'
+ExecStop=/bin/sh -c 'IMAGE_TAG=$(basename "$(readlink /opt/taskplatform/current)") exec docker compose --env-file /opt/taskplatform/shared/node.env -f ${ROLE}.yml stop'
+TimeoutStartSec=300
+TimeoutStopSec=120
+
+[Install]
+WantedBy=multi-user.target

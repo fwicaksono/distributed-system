@@ -1,0 +1,37 @@
+# Shared service definitions for the AWS per-node compose files (used via `extends`).
+#
+# Variables come from /opt/taskplatform/shared/node.env (non-secret, per host) passed with
+# `--env-file`, plus IMAGE_TAG exported by deploy.sh. Secrets come from app.env, rendered
+# from SSM Parameter Store at deploy time and never stored in the image or in git.
+
+services:
+  app-base:
+    image: ${ECR_REGISTRY:?}/${ECR_REPOSITORY:?}:${IMAGE_TAG:?IMAGE_TAG is required}
+    env_file: [/opt/taskplatform/shared/app.env]
+    environment:
+      ENVIRONMENT: production
+      LOG_JSON: "true"
+      APP_VERSION: ${IMAGE_TAG}
+      # Service discovery = fixed private IPs (see infra/aws/cli/00-config.sh).
+      # Production upgrade: Route 53 private hosted zone names (db.internal, mq.internal).
+      POSTGRES_HOST: ${DATA_IP:?}
+      REDIS_HOST: ${DATA_IP:?}
+      RABBITMQ_HOST: ${BROKER_IP:?}
+    restart: unless-stopped
+    stop_grace_period: 30s
+    logging:
+      driver: json-file
+      options: { max-size: "20m", max-file: "5" }
+
+  node-exporter:
+    image: prom/node-exporter:v1.9.1
+    restart: unless-stopped
+    # Host network + host PID: report the EC2 host, not the container. Listens on :9100,
+    # reachable only from sg-ops (Security Group) and the ufw rule for the ops node.
+    network_mode: host
+    pid: host
+    command: ["--path.rootfs=/host", "--web.listen-address=${PRIVATE_IP:?}:9100"]
+    volumes: ["/:/host:ro,rslave"]
+    logging:
+      driver: json-file
+      options: { max-size: "10m", max-file: "2" }

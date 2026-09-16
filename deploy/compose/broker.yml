@@ -1,0 +1,49 @@
+# BROKER node (private subnet): RabbitMQ and worker-1.
+# RabbitMQ is stateful (durable queues on disk) — its volume must survive redeploys.
+
+name: taskplatform
+
+services:
+  rabbitmq:
+    image: rabbitmq:4.1-management-alpine
+    restart: unless-stopped
+    hostname: rabbitmq   # node name rabbit@rabbitmq must stay stable or queues "disappear"
+    # Least privilege: RabbitMQ receives ONLY its own credentials, not the JWT secret etc.
+    env_file: [/opt/taskplatform/shared/rabbitmq.env]   # RABBITMQ_DEFAULT_USER / _PASS
+    ports:
+      - "${PRIVATE_IP:?}:5672:5672"     # AMQP: from sg-edge, sg-app, sg-ops
+      - "${PRIVATE_IP:?}:15692:15692"   # Prometheus metrics: from sg-ops
+      - "127.0.0.1:15672:15672"         # management UI: SSH/SSM port-forward only
+    volumes:
+      - /data/rabbitmq:/var/lib/rabbitmq
+      - ../../config/rabbitmq/rabbitmq.conf:/etc/rabbitmq/conf.d/90-taskplatform.conf:ro
+      - ../../config/rabbitmq/enabled_plugins:/etc/rabbitmq/enabled_plugins:ro
+    healthcheck:
+      test: ["CMD", "rabbitmq-diagnostics", "-q", "ping"]
+      interval: 10s
+      timeout: 10s
+      retries: 10
+      start_period: 30s
+    logging:
+      driver: json-file
+      options: { max-size: "20m", max-file: "5" }
+
+  worker-1:
+    extends: { file: common.yml, service: app-base }
+    command: ["python", "-m", "app.workers.main"]
+    environment:
+      INSTANCE_ID: worker-1
+      RABBITMQ_HOST: rabbitmq     # same host: use the Docker network, skip the NIC
+    ports: ["${PRIVATE_IP:?}:9101:9101"]
+    depends_on:
+      rabbitmq:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:9101/metrics', timeout=2)"]
+      interval: 15s
+      timeout: 3s
+      retries: 3
+      start_period: 20s
+
+  node-exporter:
+    extends: { file: common.yml, service: node-exporter }

@@ -1,0 +1,403 @@
+<section class="step" id="load-testing" data-phase="Uji &amp; buktikan" data-title="Load Testing">
+<dl class="brief">
+  <div><dt>Tujuan</dt><dd>Mengukur throughput, persentil latency, error rate, dan perilaku queue — lalu membandingkan 1, 2, dan 3 API server.</dd></div>
+  <div><dt>Kenapa</dt><dd>Kapasitas yang belum diukur adalah kapasitas yang ditebak.</dd></div>
+  <div><dt>Prasyarat</dt><dd>Stack lokal (langkah 5) atau deployment AWS; Grafana terbuka.</dd></div>
+  <div><dt>Dampak ke arsitektur</dt><dd>Mengungkap bottleneck yang sebenarnya — sering kali bukan di tempat yang diduga.</dd></div>
+</dl>
+
+<div class="table-wrap"><table>
+<thead><tr><th>Script</th><th>Model</th><th>Pertanyaan yang dijawab</th></tr></thead>
+<tbody>
+<tr><td><code>smoke.js</code></td><td>1 VU, 30 detik</td><td>Apakah seluruh jalur berfungsi?</td></tr>
+<tr><td><code>normal.js</code></td><td>Konstan 50 iterasi/detik, 80 % read</td><td>Baseline latency pada beban realistis</td></tr>
+<tr><td><code>high.js</code></td><td>Ramp 20 → 600/detik</td><td>Di mana titik saturasinya?</td></tr>
+<tr><td><code>burst.js</code></td><td>20 → 500/detik dalam 10 detik, lalu turun</td><td>Apakah bertahan saat lonjakan dan pulih setelahnya?</td></tr>
+<tr><td><code>task-processing.js</code></td><td>Submit N task/detik + ikuti sebagian sampai selesai</td><td>Queue depth vs throughput worker; waktu end-to-end</td></tr>
+</tbody></table></div>
+
+<x-file path="loadtest/k6/lib.js" lang="javascript"></x-file>
+<x-file path="loadtest/k6/normal.js" lang="javascript"></x-file>
+<details><summary>high.js, burst.js, task-processing.js</summary><div class="inner">
+<x-file path="loadtest/k6/high.js" lang="javascript"></x-file>
+<x-file path="loadtest/k6/burst.js" lang="javascript"></x-file>
+<x-file path="loadtest/k6/task-processing.js" lang="javascript"></x-file>
+</div></details>
+
+<h3>Apa yang diukur</h3>
+<div class="table-wrap"><table>
+<thead><tr><th>Metric</th><th>Sumber</th><th>Kenapa</th></tr></thead>
+<tbody>
+<tr><td>Throughput</td><td>Rate <code>http_reqs</code> di k6; RPS di Grafana</td><td>Pekerjaan yang diselesaikan per detik</td></tr>
+<tr><td>p50</td><td><code>med</code> di k6</td><td>Pengalaman tipikal</td></tr>
+<tr><td>p95 / p99</td><td>Summary k6; persentil di Grafana</td><td>Tail latency — yang dirasakan user paling sial (dan setiap request fan-out)</td></tr>
+<tr><td>Error rate</td><td><code>http_req_failed</code> di k6</td><td>Kejujuran sistem di bawah beban</td></tr>
+<tr><td>Queue depth</td><td>Grafana “Workers &amp; Queue”</td><td>Apakah pekerjaan async bisa mengejar?</td></tr>
+<tr><td>Saturasi</td><td>CPU per container, DB pool terpakai, CPU steal</td><td><em>Kenapa</em> angkanya seperti itu</td></tr>
+</tbody></table></div>
+
+<h3>Eksperimen scaling: 1 vs 2 vs 3 API server</h3>
+<x-file path="scripts/scale-experiment.sh" lang="bash"></x-file>
+<x-code lang="bash">
+scripts/scale-experiment.sh normal 150
+# Di AWS (jalankan k6 dari mesin di region yang sama, JANGAN lewat koneksi rumah):
+BASE_URL=https://api.example.com API_COUNT=3 RATE=150 k6 run loadtest/k6/normal.js
+</x-code>
+
+<p>Catat angka Anda sendiri di tabel ini — jaga environment tetap identik antar baris:</p>
+<div class="table-wrap"><table>
+<thead><tr><th>API</th><th class="num">RPS</th><th class="num">p50</th><th class="num">p95</th><th class="num">p99</th><th class="num">Error</th><th>Bottleneck yang teramati</th></tr></thead>
+<tbody>
+<tr><td>1</td><td class="num">…</td><td class="num">…</td><td class="num">…</td><td class="num">…</td><td class="num">…</td><td>…</td></tr>
+<tr><td>2</td><td class="num">…</td><td class="num">…</td><td class="num">…</td><td class="num">…</td><td class="num">…</td><td>…</td></tr>
+<tr><td>3</td><td class="num">…</td><td class="num">…</td><td class="num">…</td><td class="num">…</td><td class="num">…</td><td>…</td></tr>
+</tbody></table></div>
+
+<h3>Cara menjelaskan hasilnya</h3>
+<ul>
+<li><strong>Jika 1 API mentok 100 % dari batas 1 CPU sementara PostgreSQL santai</strong>, tier API-lah bottleneck-nya: 2 API seharusnya hampir menggandakan throughput dan meratakan p95. Itu tandanya horizontal scaling bekerja.</li>
+<li><strong>Jika dari 2 ke 3 hampir tidak membantu</strong>, cari bottleneck berikutnya: core laptop yang dipakai bersama semua container, CPU PostgreSQL, <code>db_pool_connections_in_use</code> mentok di 10, Redis yang single thread, Nginx, atau k6 sendiri (cek CPU-nya). Hukum Amdahl: percepatan dibatasi oleh bagian yang tidak Anda scale.</li>
+<li><strong>Jika p99 naik sementara p50 datar</strong>, ada yang terjadi sesekali: timeout menunggu pool, GC, satu instance yang lambat, CPU steal t3 di AWS.</li>
+<li><strong>Error saat <code>high.js</code></strong>: 429 (<code>limit_req</code> Nginx atau limiter aplikasi — naikkan batas untuk test, atau yang Anda ukur hanyalah limiter), 502 (upstream crash/OOM), 504 (read timeout), timeout pool yang muncul sebagai 500.</li>
+<li><strong><code>task-processing.js</code></strong>: p95 <code>POST /process</code> tetap rendah meski submission melebihi kapasitas worker; queue yang menyerapnya. Queue depth bertambah sebesar (rate submit − rate proses); latency end-to-end ikut bertambah. Kapasitas worker untuk task sleep 1 detik ≈ worker × prefetch ÷ 1 detik = 8 task/detik. Submit 20/detik dan backlog bertambah 12 setiap detik.</li>
+<li><strong>Di AWS setelah ~30 menit beban</strong>: instance t3.small kehabisan CPU credit dan di-throttle ke baseline 20 %. Latency melonjak tanpa ada perubahan kode. Cek <code>CPUCreditBalance</code> di CloudWatch dan panel steal di Grafana.</li>
+</ul>
+</section>
+
+<section class="step" id="failure-testing" data-phase="Uji &amp; buktikan" data-title="Breaking the System">
+<dl class="brief">
+  <div><dt>Tujuan</dt><dd>Merusak setiap komponen dengan sengaja, memprediksi hasilnya, mengamatinya, dan menjelaskan selisihnya.</dd></div>
+  <div><dt>Kenapa</dt><dd>Perilaku saat gagal yang belum pernah dites adalah perilaku yang tidak Anda miliki.</dd></div>
+  <div><dt>Prasyarat</dt><dd>Traffic berjalan (<code>make load-normal</code> dan <code>make load-tasks</code>) dan Grafana terbuka.</dd></div>
+  <div><dt>Dampak ke arsitektur</dt><dd>Mengubah diagram arsitektur menjadi klaim yang sudah terverifikasi.</dd></div>
+</dl>
+
+<x-file path="scripts/chaos.sh" lang="bash"></x-file>
+
+<p>Metode untuk setiap skenario: <strong>tulis prediksi Anda dulu</strong>, jalankan, amati dashboard dan log, pulihkan, lalu bandingkan. Analisis di bawah adalah perilaku yang dirancang di kode — jika yang Anda amati berbeda, Anda menemukan temuan yang nyata.</p>
+
+<h3>Menghentikan API server</h3>
+<div class="table-wrap"><table><tbody>
+<tr><th>Apa yang gagal</th><td>Proses <code>api-1</code> (<code>stop</code> yang graceful atau <code>kill</code> dengan SIGKILL)</td></tr>
+<tr><th>Pengalaman user</th><td>Graceful: tidak terasa. SIGKILL: request yang sedang berjalan di api-1 di-reset; GET di-retry Nginx ke api-2 (tetap 200), POST yang sedang berjalan mendapat 502</td></tr>
+<tr><th>Dideteksi oleh</th><td>Nginx (connection refused → <code>max_fails</code>), Prometheus <code>up{instance_name="api-1"}=0</code> → <code>TargetDown</code> setelah 1 menit</td></tr>
+<tr><th>Request yang sedang berjalan</th><td>Graceful: dikuras uvicorn dalam 20 detik. SIGKILL: hilang di tengah jalan; transaction database di-rollback otomatis</td></tr>
+<tr><th>Message di queue</th><td>Tidak terpengaruh</td></tr>
+<tr><th>Pulih?</th><td>Traffic langsung berpindah; kapasitas kembali saat container di-start (kill = stop manual, tidak auto-restart)</td></tr>
+<tr><th>Data yang bisa hilang</th><td>Tidak ada yang sudah di-commit. Edge case: mati di antara commit dan publish pada <code>/process</code> → task tertahan <code>queued</code> tanpa message</td></tr>
+<tr><th>Perbaikan di production</th><td>Transactional outbox; active health check (ALB); penggantian dikelola orchestrator (ASG/ECS)</td></tr>
+</tbody></table></div>
+
+<h3>Menghentikan worker</h3>
+<div class="table-wrap"><table><tbody>
+<tr><th>Apa yang gagal</th><td><code>worker-1</code> dengan hingga 4 task sedang berjalan</td></tr>
+<tr><th>Pengalaman user</th><td>Tidak ada di API. Beberapa task selesai lebih lambat dari perkiraan</td></tr>
+<tr><th>Dideteksi oleh</th><td>RabbitMQ (koneksi tertutup), <code>rabbitmq_detailed_queue_consumers</code> turun ke 1; <code>TargetDown</code></td></tr>
+<tr><th>Pekerjaan yang sedang berjalan</th><td>Graceful: task diselesaikan (≤ 25 detik). SIGKILL: message yang unacked di-requeue ke worker-2 (<code>redelivered=true</code>)</td></tr>
+<tr><th>Message di queue</th><td>Aman; worker-2 menguras antrean dengan kecepatan setengahnya</td></tr>
+<tr><th>Pulih?</th><td>Ya. Task yang sudah di-claim worker-1 menunggu lease 60 detik expired, berputar lewat retry queue, lalu di-claim ulang</td></tr>
+<tr><th>Data yang bisa hilang</th><td>Tidak ada. Pekerjaan mungkin dieksekusi dua kali (disengaja, write-nya idempotent)</td></tr>
+<tr><th>Perbaikan di production</th><td>Lease yang diperpanjang lewat heartbeat untuk task panjang; autoscaling consumer berdasarkan queue depth</td></tr>
+</tbody></table></div>
+
+<h3>Menghentikan Redis</h3>
+<div class="table-wrap"><table><tbody>
+<tr><th>Apa yang gagal</th><td>Cache dan penyimpanan rate limit</td></tr>
+<tr><th>Pengalaman user</th><td>Request tetap berhasil; latency sedikit naik. Rate limiting diam-diam nonaktif (fail-open)</td></tr>
+<tr><th>Dideteksi oleh</th><td><code>cache_operations_total{result="error"}</code>, readiness <code>"degraded"</code>, <code>TargetDown</code> untuk redis-exporter</td></tr>
+<tr><th>Request yang sedang berjalan</th><td>Setiap panggilan Redis gagal setelah ≤ 500 ms (socket timeout) lalu jatuh ke PostgreSQL</td></tr>
+<tr><th>Message di queue</th><td>Tidak terpengaruh; invalidation dari worker gagal tanpa dampak</td></tr>
+<tr><th>Pulih?</th><td>Ya, otomatis; cache terisi kembali sesuai permintaan</td></tr>
+<tr><th>Data yang bisa hilang</th><td>Isi cache (memang disengaja). Jika Redis <em>ter-partisi</em> alih-alih restart, invalidation yang terlewat menyisakan entry stale sampai TTL (≤ 70 detik)</td></tr>
+<tr><th>Perbaikan di production</th><td>Replica + failover (ElastiCache); circuit breaker untuk melewati Redis sepenuhnya setelah gagal berulang, alih-alih membayar 500 ms setiap kali; tentukan fail-open vs fail-closed per endpoint</td></tr>
+</tbody></table></div>
+
+<h3>Menghentikan RabbitMQ</h3>
+<div class="table-wrap"><table><tbody>
+<tr><th>Apa yang gagal</th><td>Message broker</td></tr>
+<tr><th>Pengalaman user</th><td>Read dan pembuatan task tetap jalan. <code>POST /process</code> mengembalikan 503 setelah publish timeout; task ditandai <code>failed</code> dengan <code>last_error</code>, sehingga client bisa mencoba lagi</td></tr>
+<tr><th>Dideteksi oleh</th><td>Exception di publisher, <code>tasks_published_total{result="error"}</code>, readiness <code>degraded</code>, worker mencatat percobaan reconnect</td></tr>
+<tr><th>Pekerjaan yang sedang berjalan</th><td>Worker tidak bisa ack; message yang sedang diproses akan dikirim ulang setelah broker kembali (duplikat, diserap oleh claim)</td></tr>
+<tr><th>Message di queue</th><td>Queue durable + message persistent selamat di volume <code>rabbitmq-data</code></td></tr>
+<tr><th>Pulih?</th><td>Ya: <code>connect_robust</code> reconnect dan mendeklarasikan ulang consumer; publisher API reconnect saat publish berikutnya</td></tr>
+<tr><th>Data yang bisa hilang</th><td>Tidak ada yang sudah di-acknowledge. Message yang di-publish tanpa konfirmasi dilaporkan sebagai kegagalan, bukan dibuang diam-diam</td></tr>
+<tr><th>Perbaikan di production</th><td>Cluster 3 node dengan quorum queue, atau SQS; outbox agar submission tetap antre di lokal selama outage</td></tr>
+</tbody></table></div>
+
+<h3>Menghentikan PostgreSQL</h3>
+<div class="table-wrap"><table><tbody>
+<tr><th>Apa yang gagal</th><td>Source of truth</td></tr>
+<tr><th>Pengalaman user</th><td>Hampir semuanya gagal: autentikasi memuat user dari database. <code>/health/ready</code> mengembalikan 503</td></tr>
+<tr><th>Dideteksi oleh</th><td>Readiness, alert rasio 5xx, <code>TargetDown</code> untuk postgres-exporter</td></tr>
+<tr><th>Request yang sedang berjalan</th><td>Gagal dengan error koneksi; transaction tidak pernah di-commit</td></tr>
+<tr><th>Message di queue</th><td>Tetap di queue. Worker yang menerimanya gagal claim, lalu <code>nack(requeue=True)</code> setelah 1 detik — message berputar tapi tidak hilang</td></tr>
+<tr><th>Pulih?</th><td>Ya, tanpa restart: <code>pool_pre_ping</code> mengganti koneksi yang mati</td></tr>
+<tr><th>Data yang bisa hilang</th><td>Tidak ada yang sudah di-commit (<code>synchronous_commit=on</code>, WAL). Kehilangan disk di node data = semua data sejak backup terakhir — <strong>dan belum ada backup otomatis</strong></td></tr>
+<tr><th>Perbaikan di production</th><td>RDS Multi-AZ dengan failover otomatis; backup PITR; worker berhenti consume selama DB mati alih-alih berputar</td></tr>
+</tbody></table></div>
+
+<h3>Kill container (SIGKILL)</h3>
+<p><code>docker kill</code> melewati graceful shutdown: tanpa draining, tanpa ack terakhir, transaction yang terbuka dibatalkan. Setiap komponen stateless pulih lewat requeue, retry, atau rollback. Untuk yang stateful, ini menguji crash safety: PostgreSQL me-replay WAL saat start (<code>database system was interrupted; last known up at …</code>, lalu <code>ready to accept connections</code>); RabbitMQ memulihkan queue durable dari message store-nya. Perhatikan bahwa Docker tidak me-restart container yang di-kill secara manual — crash sungguhan (atau OOM kill) yang memicu <code>restart: unless-stopped</code>.</p>
+
+<h3>Menghabiskan CPU</h3>
+<div class="table-wrap"><table><tbody>
+<tr><th>Apa yang gagal</th><td>api-1 menghabiskan kuota cgroup 1 CPU (<code>scripts/chaos.sh cpu-api</code>); di AWS coba juga <code>stress-ng --cpu 2</code> di node app</td></tr>
+<tr><th>Pengalaman user</th><td>Sepertiga request melambat: p95/p99 naik untuk semua orang (round robin tidak tahu)</td></tr>
+<tr><th>Dideteksi oleh</th><td>Panel CPU container, latency per route, healthcheck timeout → Docker menandai unhealthy (tidak me-restart)</td></tr>
+<tr><th>Pulih?</th><td>Saat beban berhenti. Di t3, CPU yang terus tinggi juga menguras credit → throttling di seluruh host kemudian</td></tr>
+<tr><th>Data yang bisa hilang</th><td>Tidak ada; client mungkin timeout</td></tr>
+<tr><th>Perbaikan di production</th><td><code>least_conn</code> atau outlier ejection; autoscaling berdasarkan CPU; pekerjaan CPU-bound dikeluarkan dari tier API (sudah — itulah alasan worker ada)</td></tr>
+</tbody></table></div>
+
+<h3>Menghabiskan memori</h3>
+<div class="table-wrap"><table><tbody>
+<tr><th>Apa yang gagal</th><td>cgroup worker-1 mencapai 512 MB (<code>scripts/chaos.sh memory-worker</code>)</td></tr>
+<tr><th>Pengalaman user</th><td>Tidak langsung terasa; task di worker itu tertunda</td></tr>
+<tr><th>Dideteksi oleh</th><td>Kernel OOM killer (<code>journalctl -k</code>), <code>OOMKilled=true</code> / exit 137, jumlah restart</td></tr>
+<tr><th>Pekerjaan yang sedang berjalan</th><td>Jika proses worker yang di-kill, message unacked-nya dikirim ulang</td></tr>
+<tr><th>Pulih?</th><td>Restart policy me-restart container yang crash; tanpa batas memori per container, OOM killer milik <em>host</em> bisa saja memilih PostgreSQL — itulah alasan ada limit dan <code>maxmemory</code></td></tr>
+<tr><th>Perbaikan di production</th><td>Memory request/limit per service, alert pada working set, recycle worker berkala (gaya <code>max_tasks_per_child</code>) untuk leak</td></tr>
+</tbody></table></div>
+
+<h3>Menyuntikkan network delay</h3>
+<div class="table-wrap"><table><tbody>
+<tr><th>Apa yang gagal</th><td>+300 ms pada egress PostgreSQL (<code>chaos.sh latency-db</code>, <code>tc netem</code>) atau +200 ms pada api-1</td></tr>
+<tr><th>Pengalaman user</th><td>Delay DB: setiap request lebih lambat; di bawah beban, koneksi pool tertahan 300 ms+ masing-masing → pool habis → request menunggu 5 detik → error 500. Perlambatan kecil berubah menjadi outage</td></tr>
+<tr><th>Dideteksi oleh</th><td>Persentil latency, <code>db_pool_connections_in_use</code> mentok di maksimum, error timeout pool di log</td></tr>
+<tr><th>Message di queue</th><td>Worker melambat; queue depth naik</td></tr>
+<tr><th>Pulih?</th><td>Ya saat latency hilang; timeout memastikan sistem tidak terjebak</td></tr>
+<tr><th>Perbaikan di production</th><td>Deadline propagation, load shedding (gagal cepat di edge saat jenuh), bulkhead (pool terpisah per kelas endpoint), hindari retry storm</td></tr>
+</tbody></table></div>
+
+<h3>Skenario khusus AWS</h3>
+<ul>
+<li><strong>Stop EC2 instance node app</strong>: api-2 dan api-3 hilang bersamaan; koneksi <em>timeout</em> (host yang mati tidak mengirim RST) → setiap failover memakan <code>proxy_connect_timeout</code> (3 detik) sampai ditandai down. Perhatikan betapa berbedanya ini dibanding container yang di-stop.</li>
+<li><strong>Stop NAT instance</strong>: traffic live tidak terpengaruh; SSM agent offline setelah beberapa menit; deploy gagal dengan “no instances matched”. Egress dan control plane adalah failure domain yang terpisah.</li>
+<li><strong>Hapus rule sg-data untuk sg-app</strong>: readiness api-2/api-3 gagal dengan timeout; api-1 tetap jalan. Kegagalan murni konfigurasi yang terlihat seperti outage database.</li>
+</ul>
+</section>
+
+<section class="step" id="troubleshooting" data-phase="Uji &amp; buktikan" data-title="Troubleshooting">
+<dl class="brief">
+  <div><dt>Tujuan</dt><dd>Runbook yang dimulai dari gejala, khusus untuk sistem ini.</dd></div>
+  <div><dt>Kenapa</dt><dd>Di bawah tekanan Anda butuh jalur, bukan buku teks.</dd></div>
+  <div><dt>Prasyarat</dt><dd>Langkah 22, 31, 32.</dd></div>
+  <div><dt>Dampak ke arsitektur</dt><dd>—</dd></div>
+</dl>
+
+<h3>Loop umum</h3>
+<ol>
+<li><strong>Cakupan</strong>: semua user atau sebagian? Semua endpoint atau satu? Semua instance atau satu? (Grafana: per instance / per route.)</li>
+<li><strong>Timeline</strong>: apa yang berubah? Deploy (versi di <code>/health/live</code>), konfigurasi, traffic, event AWS.</li>
+<li><strong>Ikuti satu request</strong>: ambil <code>X-Request-ID</code> dari response yang gagal; grep log Nginx, API, dan worker.</li>
+<li><strong>Telusuri jalurnya dari luar ke dalam</strong>: DNS → TLS → Nginx → API → Redis / PostgreSQL / RabbitMQ → worker.</li>
+<li><strong>Timeout atau refused?</strong> (langkah 19) memberi tahu Anda masalah jaringan atau proses.</li>
+</ol>
+
+<div class="table-wrap"><table>
+<thead><tr><th>Gejala</th><th>Kemungkinan penyebab</th><th>Cek</th><th>Solusi</th></tr></thead>
+<tbody>
+<tr><td><code>curl: Could not resolve host</code></td><td>Record DNS belum ada/masih propagasi</td><td><code>dig +short api.example.com</code></td><td>Perbaiki record; tunggu TTL</td></tr>
+<tr><td>Error TLS / sertifikat expired</td><td>Renewal gagal; Nginx belum di-reload</td><td><code>openssl s_client …</code>, <code>journalctl -u certbot-renew</code></td><td>Buka port 80; jalankan service renew</td></tr>
+<tr><td>502 untuk semua request</td><td>Semua upstream mati/tidak terjangkau</td><td>Error log Nginx; <code>curl</code> setiap upstream dari edge</td><td>Start API; perbaiki SG sg-app ← sg-edge</td></tr>
+<tr><td>504 di sebagian request</td><td>Query lambat, event loop terblokir</td><td>p95 per route; slow log PostgreSQL; <code>pg_stat_statements</code></td><td>Index, pindahkan pekerjaan ke worker</td></tr>
+<tr><td>401 untuk semua user tepat setelah deploy</td><td><code>JWT_SECRET_KEY</code> berubah → semua token invalid</td><td>Histori parameter</td><td>Kembalikan nilainya; rotate secret dengan periode overlap</td></tr>
+<tr><td>401 hanya di satu instance</td><td>Secret antar instance berbeda</td><td><code>sha256sum /opt/taskplatform/shared/app.env</code> per host</td><td>Deploy ulang host itu</td></tr>
+<tr><td>503 di <code>/process</code></td><td>RabbitMQ mati / flow control</td><td><code>rabbitmq-diagnostics alarms</code>, disk/memori</td><td>Kosongkan disk; tambah consumer</td></tr>
+<tr><td>Task tertahan <code>queued</code></td><td>Tidak ada consumer; atau crash di antara commit dan publish</td><td>Panel consumer; queue berisi 0 message?</td><td>Start worker; submit ulang (butuh outbox untuk mencegahnya)</td></tr>
+<tr><td>Task tertahan <code>processing</code></td><td>Worker mati; lease belum expired; message hilang dari jalur retry</td><td><code>lease_expires_at</code>, depth retry queue</td><td>Tunggu lease; ubah status ke <code>failed</code> lalu submit ulang</td></tr>
+<tr><td>DLQ terus bertambah</td><td>Payload beracun atau dependency gagal lebih lama dari 155 detik retry</td><td>Periksa message di management UI; log worker</td><td>Perbaiki penyebabnya; shovel kembali ke <code>tasks</code></td></tr>
+<tr><td>p99 tinggi, p50 normal</td><td>Satu instance lambat, antre pool, CPU steal</td><td>Latency per instance; panel steal</td><td>Ganti instance / unlimited credit / type lebih besar</td></tr>
+<tr><td><code>too many clients already</code></td><td>Hitungan pool</td><td><code>pg_stat_activity</code> per <code>application_name</code></td><td>Kecilkan pool; PgBouncer</td></tr>
+<tr><td>Disk penuh di node ops</td><td>TSDB Prometheus</td><td><code>du -sh /data/prometheus</code></td><td>Flag retention size sudah di-set (8 GB); perbesar volume</td></tr>
+<tr><td>CI: <code>no instances matched tag</code></td><td>SSM agent offline (NAT mati) atau tag hilang</td><td><code>aws ssm describe-instance-information</code></td><td>Perbaiki NAT; beri tag pada instance</td></tr>
+<tr><td>Container restart terus-menerus</td><td>Env var hilang, dependency tidak terjangkau saat start</td><td><code>docker logs</code>, exit code</td><td>Cek file env hasil render; nyalakan dependency dulu</td></tr>
+</tbody></table></div>
+
+<x-code lang="bash" title="One-liner yang berguna">
+# Instance mana yang melayani request yang gagal?
+curl -sD - https://api.example.com/health/live -o /dev/null | grep -i x-request-id
+ssh tp-edge "sudo docker logs taskplatform-nginx-1 2>&1 | grep <request-id>"
+# Di mana waktu habis di database?
+ssh tp-data "sudo docker exec taskplatform-postgres-1 psql -U taskplatform -c \
+  \"SELECT calls, round(mean_exec_time::numeric,1) ms, left(query,80) FROM pg_stat_statements ORDER BY total_exec_time DESC LIMIT 5\""
+# Siapa yang memegang koneksi?
+ssh tp-data "sudo docker exec taskplatform-postgres-1 psql -U taskplatform -c \
+  \"SELECT application_name, state, count(*) FROM pg_stat_activity GROUP BY 1,2 ORDER BY 3 DESC\""
+# Kondisi queue
+ssh tp-broker "sudo docker exec taskplatform-rabbitmq-1 rabbitmqctl list_queues name messages_ready messages_unacknowledged consumers"
+</x-code>
+</section>
+
+<section class="step" id="cost" data-phase="Uji &amp; buktikan" data-title="Optimasi Biaya">
+<dl class="brief">
+  <div><dt>Tujuan</dt><dd>Tahu biaya setiap resource, memilih arsitektur termurah yang tetap mengajarkan yang Anda butuhkan, dan tidak meninggalkan apa pun yang masih berjalan.</dd></div>
+  <div><dt>Kenapa</dt><dd>Proyek belajar yang menghabiskan $300 karena NAT Gateway yang terlupa mengajarkan pelajaran yang salah.</dd></div>
+  <div><dt>Prasyarat</dt><dd>Alarm budget (langkah 15).</dd></div>
+  <div><dt>Dampak ke arsitektur</dt><dd>Beberapa pilihan desain di sini (NAT instance, credit standard, tanpa ALB) adalah keputusan biaya.</dd></div>
+</dl>
+<p>Harga adalah perkiraan on-demand dalam USD di region umum; verifikasi dengan AWS Pricing Calculator untuk region Anda.</p>
+
+<div class="table-wrap"><table>
+<thead><tr><th>Resource</th><th>Harga satuan (perkiraan)</th><th>Proyek ini</th><th class="num">≈ / bulan 24×7</th></tr></thead>
+<tbody>
+<tr><td>t3.small</td><td>$0,021–0,026 / jam</td><td>4</td><td class="num">$65</td></tr>
+<tr><td>t3.medium</td><td>$0,042–0,053 / jam</td><td>1 (data)</td><td class="num">$33</td></tr>
+<tr><td>t4g.nano (NAT)</td><td>$0,0042–0,005 / jam</td><td>1</td><td class="num">$3,5</td></tr>
+<tr><td>EBS gp3</td><td>$0,08–0,096 / GB-bulan</td><td>≈ 128 GB</td><td class="num">$11</td></tr>
+<tr><td>Public IPv4 (termasuk Elastic IP)</td><td>$0,005 / jam per alamat</td><td>2</td><td class="num">$7,3</td></tr>
+<tr><td>Storage ECR</td><td>$0,10 / GB-bulan</td><td>20 image × ~150 MB</td><td class="num">$0,3</td></tr>
+<tr><td>Data transfer keluar</td><td>~$0,09 / GB setelah kuota gratis</td><td>load test dari luar AWS</td><td class="num">bervariasi</td></tr>
+<tr><td>Parameter Store standard</td><td>gratis</td><td>9 parameter</td><td class="num">$0</td></tr>
+<tr><td>Route 53 hosted zone</td><td>$0,50 / zone-bulan</td><td>opsional</td><td class="num">$0,5</td></tr>
+<tr><th>Total</th><td></td><td></td><th class="num">≈ $120</th></tr>
+</tbody></table></div>
+
+<h3>Komponen mahal yang perlu diwaspadai</h3>
+<div class="table-wrap"><table>
+<thead><tr><th>Komponen</th><th>Kenapa sering mengejutkan</th><th>Yang dilakukan proyek ini</th></tr></thead>
+<tbody>
+<tr><td>NAT Gateway</td><td>~$33/bulan meski idle <em>ditambah</em> biaya pemrosesan per GB; satu per AZ untuk HA</td><td>NAT instance + S3 endpoint gratis</td></tr>
+<tr><td>Application Load Balancer</td><td>~$16–20/bulan + pemakaian LCU</td><td>Nginx di node edge</td></tr>
+<tr><td>RDS Multi-AZ</td><td>Harga instance dua kali lipat + storage</td><td>PostgreSQL di EC2 (dengan risiko yang sudah dijelaskan)</td></tr>
+<tr><td>Interface VPC endpoint</td><td>~$7/bulan masing-masing per AZ (SSM butuh 3, ECR 2)</td><td>Tidak dipakai; ditangani NAT</td></tr>
+<tr><td>Traffic lintas AZ</td><td>$0,01/GB untuk setiap arah</td><td>Satu AZ</td></tr>
+<tr><td>Credit unlimited t3</td><td>Beban yang terus-menerus menagih vCPU-jam tambahan</td><td><code>CpuCredits=standard</code></td></tr>
+<tr><td>CloudWatch Logs / detailed monitoring</td><td>Biaya ingestion per GB, biaya per metric</td><td>Prometheus self-hosted; log rotation Docker</td></tr>
+<tr><td>Instance yang di-stop</td><td>EBS dan public IPv4 tetap ditagih</td><td>Terminate lewat script teardown</td></tr>
+</tbody></table></div>
+
+<h3>Biaya minimal vs mirip production</h3>
+<div class="grid-2">
+<div><h4>Belajar minimal (~$20/bulan, ~$0,03/jam)</h4><ul><li>1 × t3.small menjalankan seluruh <code>docker-compose.yml</code> (langkah 24)</li><li>Public subnet di default VPC, SG 80/443 + SSH dari IP Anda</li><li>Elastic IP + Let’s Encrypt</li><li>Mengajarkan: Linux, Docker, TLS, SG, DNS</li></ul></div>
+<div><h4>Mirip production (~$500+/bulan)</h4><ul><li>ALB di 2 AZ, ASG berisi 2+ instance app (atau ECS Fargate)</li><li>RDS PostgreSQL Multi-AZ, ElastiCache dengan replica, Amazon MQ/SQS</li><li>NAT Gateway per AZ, VPC endpoint, WAF</li><li>Managed Prometheus/Grafana atau CloudWatch, backup otomatis</li></ul></div>
+</div>
+
+<h3>Matikan semuanya</h3>
+<x-file path="infra/aws/cli/99-teardown.sh" lang="bash"></x-file>
+<x-code lang="bash" title="Pastikan tidak ada yang tersisa">
+aws ec2 describe-instances --filters Name=instance-state-name,Values=running,stopped --query 'length(Reservations)'
+aws ec2 describe-addresses --query 'length(Addresses)'
+aws ec2 describe-volumes --filters Name=status,Values=available --query 'length(Volumes)'
+aws ec2 describe-nat-gateways --filter Name=state,Values=available --query 'length(NatGateways)'
+aws ecr describe-repositories --query 'length(repositories)'
+# Lalu: Billing and Cost Management → Cost Explorer, group by Service, 7 hari terakhir.
+</x-code>
+<p>Ritme belajar yang disarankan: buat dengan script 01–04 di awal sesi (~15 menit), hancurkan dengan script 99 di akhir sesi. Route 53 zone dan repository ECR boleh dibiarkan — biayanya hanya beberapa sen.</p>
+</section>
+
+<section class="step" id="production-improvements" data-phase="Uji &amp; buktikan" data-title="Peningkatan untuk Production">
+<dl class="brief">
+  <div><dt>Tujuan</dt><dd>Tahu persis apa yang membedakan sistem belajar ini dari sistem yang layak menopang bisnis.</dd></div>
+  <div><dt>Kenapa</dt><dd>“Production-ready” adalah daftar risiko spesifik yang sudah ditangani, bukan perasaan.</dd></div>
+  <div><dt>Prasyarat</dt><dd>Semua langkah sebelumnya.</dd></div>
+  <div><dt>Dampak ke arsitektur</dt><dd>Roadmap.</dd></div>
+</dl>
+<div class="table-wrap"><table>
+<thead><tr><th>Risiko saat ini</th><th>Perbaikan</th><th>Biaya / kompleksitas</th></tr></thead>
+<tbody>
+<tr><td>Node edge dan data adalah SPOF; hanya satu AZ</td><td>ALB + ASG di 2 AZ; RDS Multi-AZ; replica ElastiCache</td><td>$ tinggi, beban ops rendah</td></tr>
+<tr><td>Tidak ada backup</td><td>Backup otomatis RDS + PITR, atau <code>pg_dump</code>/WAL-G ke S3 + snapshot EBS (Data Lifecycle Manager). Uji restore-nya</td><td>Rendah</td></tr>
+<tr><td>Celah commit-lalu-publish</td><td>Transactional outbox + relay; reaper untuk task yang macet</td><td>Sedang</td></tr>
+<tr><td>Infrastruktur dijalankan manual lewat CLI</td><td>Terraform/OpenTofu dengan remote state, plan di PR, drift detection</td><td>Sedang</td></tr>
+<tr><td>Tanpa trace, tanpa log terpusat, alert tidak terkirim</td><td>OpenTelemetry → Tempo/X-Ray; Loki/CloudWatch Logs; Alertmanager → Slack/PagerDuty; SLO dengan error budget</td><td>Sedang</td></tr>
+<tr><td>Durability broker hanya di satu node</td><td>Quorum queue di cluster 3 node, atau SQS + DLQ</td><td>Sedang / rendah (SQS)</td></tr>
+<tr><td>Service discovery berbasis IP tetap</td><td>Route 53 private hosted zone, atau service discovery ECS</td><td>Rendah</td></tr>
+<tr><td>Nginx OSS hanya passive health check</td><td>Health check target ALB pada <code>/health/ready</code></td><td>Rendah jika pakai ALB</td></tr>
+<tr><td>JWT tidak bisa dicabut</td><td>Access token pendek + refresh token dengan rotasi dan daftar pencabutan; atau identity provider (Cognito, Auth0)</td><td>Sedang</td></tr>
+<tr><td>Rotasi secret manual</td><td>Secrets Manager dengan rotasi; verifikasi JWT dua key selama rotasi</td><td>Rendah–sedang</td></tr>
+<tr><td>Supply chain</td><td>Pin action ke SHA, tanda tangani image (cosign), blokir deploy untuk CVE kritis, SBOM</td><td>Rendah</td></tr>
+<tr><td>Traffic internal tidak dienkripsi</td><td>TLS ke PostgreSQL/Redis/RabbitMQ, atau mesh mTLS</td><td>Sedang</td></tr>
+<tr><td>Verifikasi deploy hanya lulus/gagal</td><td>Canary dengan analisis metrics otomatis dan rollback</td><td>Tinggi</td></tr>
+<tr><td>Patch host manual</td><td>AMI immutable (Packer) + instance refresh; SSM Patch Manager</td><td>Sedang</td></tr>
+<tr><td>Edge publik tanpa perlindungan serangan L7</td><td>AWS WAF / CloudFront; Shield Standard aktif otomatis</td><td>Rendah–sedang</td></tr>
+</tbody></table></div>
+<x-note kind="tip" title="Jangan ambil semuanya sekaligus">
+<p>Setiap baris dibenarkan oleh sebuah risiko. Startup dua orang sebaiknya mulai dari backup, Terraform, RDS, dan pengiriman alert — keempatnya menghilangkan risiko terbesar dengan usaha paling kecil — dan menunda service mesh dan canary sampai traffic dan tim membutuhkannya.</p>
+</x-note>
+</section>
+
+<section class="step" id="final-architecture" data-phase="Uji &amp; buktikan" data-title="Arsitektur Final">
+<dl class="brief">
+  <div><dt>Tujuan</dt><dd>Melihat seluruh sistem — dan jalan yang ditempuh untuk sampai ke sana — di satu tempat.</dd></div>
+  <div><dt>Kenapa</dt><dd>Setiap komponen kini seharusnya punya alasan yang bisa Anda nyatakan dalam satu kalimat.</dd></div>
+  <div><dt>Prasyarat</dt><dd>Langkah 1–42.</dd></div>
+  <div><dt>Dampak ke arsitektur</dt><dd>—</dd></div>
+</dl>
+<x-code lang="text">
+                                   Internet
+                                       │ DNS A api.example.com → Elastic IP
+┌──────────────────────────── VPC 10.20.0.0/16 · 1 AZ ─────────────────────────────┐
+│ public 10.20.1.0/24 ─ route 0.0.0.0/0 → IGW                                       │
+│   edge 10.20.1.10  [sg-edge 80,443 ← dunia · 22 ← admin]                          │
+│     Nginx (TLS 1.2/1.3, HSTS, round robin, passive health, limit_req)             │
+│     api-1                                                                          │
+│   nat 10.20.1.20   [sg-nat all ← VPC] ─ EIP ─ akses keluar untuk private subnet    │
+│                                                                                    │
+│ private 10.20.11.0/24 ─ route 0.0.0.0/0 → nat · S3 gateway endpoint               │
+│   app    10.20.11.20 [sg-app 8000-8001 ← edge,ops]      api-2  api-3               │
+│   broker 10.20.11.30 [sg-broker 5672 ← edge,app,ops]    RabbitMQ  worker-1         │
+│   ops    10.20.11.40 [sg-ops]                           worker-2  Prometheus Grafana│
+│   data   10.20.11.50 [sg-data 5432,6379 ← edge,app,broker,ops]  PostgreSQL  Redis  │
+└────────────────────────────────────────────────────────────────────────────────────┘
+IAM: ec2-role (ECR pull 1 repo, SSM params 1 path, SSM agent) · github-deploy (OIDC, main saja)
+CI/CD: GitHub Actions → test → ECR (SHA immutable) → SSM Run Command → rolling deploy → verifikasi
+</x-code>
+
+<h3>Evolusinya, dan harga setiap langkah</h3>
+<div class="table-wrap"><table>
+<thead><tr><th>Tahap</th><th>Masalah yang memaksanya</th><th>Yang ditambahkan</th><th>Masalah baru yang muncul</th></tr></thead>
+<tbody>
+<tr><td>Single server</td><td>—</td><td>Proses FastAPI</td><td>Data hilang saat restart</td></tr>
+<tr><td>Modular backend</td><td>Kode kusut, sulit dites</td><td>Layer, DI</td><td>Indirection</td></tr>
+<tr><td>PostgreSQL</td><td>Data yang durable dan concurrent</td><td>Database, migration, pool</td><td>Batas koneksi, perubahan schema</td></tr>
+<tr><td>Redis</td><td>Beban read; counter per proses</td><td>Cache-aside, rate limiter</td><td>Stale data, invalidation, failure mode kedua</td></tr>
+<tr><td>RabbitMQ + worker</td><td>Pekerjaan panjang di dalam request</td><td>Queue, retry, DLQ, idempotency</td><td>Duplikat, dual write, hasil yang eventual</td></tr>
+<tr><td>Docker</td><td>Environment yang berbeda-beda</td><td>Image, Compose</td><td>Kebersihan image, keanehan jaringan/firewall Docker</td></tr>
+<tr><td>Nginx + 3 API, 2 worker</td><td>Kapasitas satu proses; kegagalan satu proses</td><td>Load balancer, replika stateless</td><td>Proxy header, health check, state bersama</td></tr>
+<tr><td>AWS EC2</td><td>Laptop bukan server</td><td>Instance, IAM</td><td>Biaya, patching, debugging jarak jauh</td></tr>
+<tr><td>VPC / subnet / SG</td><td>Database tidak boleh public</td><td>Private network, NAT, bastion</td><td>Kompleksitas routing, SPOF egress</td></tr>
+<tr><td>Banyak EC2</td><td>Isolasi, profil resource</td><td>Node berbasis role</td><td>Partial failure, latency jaringan, SPOF bertambah</td></tr>
+<tr><td>DNS / HTTPS</td><td>Credential plain text, alamat tidak stabil</td><td>EIP, DNS, Let’s Encrypt</td><td>Renewal, rate limit</td></tr>
+<tr><td>Prometheus / Grafana</td><td>Tidak bisa melihat 11 proses</td><td>Metrics, dashboard, alert</td><td>Cardinality, service stateful tambahan</td></tr>
+<tr><td>CI/CD GitHub Actions</td><td>Deploy manual yang berisiko</td><td>Pipeline, OIDC, SSM, rollback</td><td>Pipeline menjadi infrastruktur kritis</td></tr>
+<tr><td>Load testing</td><td>Kapasitas tidak diketahui</td><td>Skenario k6</td><td>Merancang test yang realistis itu sulit</td></tr>
+<tr><td>Failure testing</td><td>Klaim ketahanan belum terverifikasi</td><td>Skenario chaos</td><td>Pengetahuan tentang setiap celah yang tersisa</td></tr>
+</tbody></table></div>
+</section>
+
+<section class="step" id="what-i-learned" data-phase="Uji &amp; buktikan" data-title="Apa yang Saya Pelajari">
+<dl class="brief">
+  <div><dt>Tujuan</dt><dd>Merangkum pelajaran dengan kata-kata Anda sendiri — dengan hasil pengukuran Anda sendiri sebagai bukti.</dd></div>
+  <div><dt>Kenapa</dt><dd>Nilai proyek ini ada pada penalaran yang bisa Anda jelaskan di interview atau design review, bukan pada YAML-nya.</dd></div>
+  <div><dt>Prasyarat</dt><dd>Catatan Anda dari langkah 37 dan 38.</dd></div>
+  <div><dt>Dampak ke arsitektur</dt><dd>—</dd></div>
+</dl>
+
+<h3>Pelajaran yang diajarkan sistem ini</h3>
+<ol>
+<li><strong>Distribusi memberi kapasitas dan isolasi, dengan harga partial failure.</strong> Lima server berarti lebih banyak cara untuk rusak, bukan lebih sedikit.</li>
+<li><strong>Stateless murah untuk di-scale; state adalah tempat engineering yang sesungguhnya.</strong> Setiap masalah sulit menyentuh PostgreSQL atau RabbitMQ.</li>
+<li><strong>Setiap network call butuh timeout</strong>, dan setiap retry butuh backoff, jitter, dan idempotency — jika tidak, retry itu sendiri yang menjadi outage.</li>
+<li><strong>At-least-once delivery + pemrosesan idempotent</strong> adalah cara “exactly once” dibangun dalam praktik.</li>
+<li><strong>Dua penyimpanan berarti ada keputusan consistency.</strong> TTL cache, commit-lalu-publish, status yang eventual: masing-masing adalah trade-off yang disengaja.</li>
+<li><strong>Health check adalah bagian dari failure model.</strong> Liveness vs readiness, dan apa saja yang menjadi dependency readiness, menentukan apakah partial failure menyebar.</li>
+<li><strong>Jaringan gagal sebagai timeout, proses gagal sebagai refused.</strong> Tahu mana yang sedang Anda hadapi memangkas waktu debugging separuhnya.</li>
+<li><strong>Keamanan itu berlapis, dan lapisannya punya celah</strong>: SG, host firewall, auth aplikasi — dan celah seperti Docker yang melewati ufw atau IMDS yang bisa dijangkau dari container.</li>
+<li><strong>Role, bukan key.</strong> OIDC dan instance profile menghilangkan penyebab kebobolan akun AWS yang paling umum.</li>
+<li><strong>Artifact immutable membuat rollback membosankan</strong> — kecuali untuk data dan secret, yang tinggal di luarnya.</li>
+<li><strong>Metrics menjawab “seberapa parah”, log menjawab “apa yang terjadi”, trace menjawab “di mana”.</strong> Correlation ID membuat log bisa dipakai lintas mesin.</li>
+<li><strong>Hasil scaling jarang linear.</strong> Bagian yang menarik adalah menemukan bottleneck berikutnya.</li>
+<li><strong>Menambah teknologi itu mudah; membenarkannya adalah keterampilan.</strong> Arsitektur termurah yang memenuhi kebutuhan adalah arsitektur terbaik.</li>
+</ol>
+
+<h3>Tulis jawaban Anda sendiri</h3>
+<dl class="qa">
+<dt>Apa bottleneck pada 1, 2, dan 3 API server, dan bagaimana Anda membuktikannya?</dt><dd>Sebutkan panel Grafana dan angka dari tabel Anda.</dd>
+<dt>Skenario kegagalan mana yang mengejutkan Anda, dan kenapa prediksi Anda meleset?</dt><dd>Selisih antara prediksi dan pengamatan itulah pelajarannya.</dd>
+<dt>Jika sistem ini harus selamat saat kehilangan satu Availability Zone, apa yang diubah pertama kali dan berapa biayanya per bulan?</dt><dd>Gunakan tabel biaya.</dd>
+<dt>Komponen mana yang akan Anda hapus jika traffic hanya 10 request per menit?</dt><dd>Argumentasikan sistem paling sederhana yang tetap berfungsi.</dd>
+<dt>Di mana sebuah task bisa diproses dua kali, dan kenapa itu bisa diterima?</dt><dd>Tunjuk <code>claim()</code> dan <code>ON CONFLICT</code>.</dd>
+<dt>Di mana sebuah task bisa hilang, dan bagaimana menutup celah itu?</dt><dd>Commit-lalu-publish; transactional outbox.</dd>
+</dl>
+</section>

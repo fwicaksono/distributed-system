@@ -1,0 +1,217 @@
+# CI/CD pipeline
+#
+#   pull request  : lint -> unit tests -> integration tests -> docker build (no push)
+#   push to main  : ... -> push image to ECR -> migrate -> rolling deploy -> public health check
+#
+# Authentication to AWS uses GitHub OIDC: GitHub issues a short-lived signed token for
+# this workflow run, AWS STS exchanges it for temporary credentials of the deploy role.
+# There are NO AWS access keys stored in GitHub.
+#
+# Required repository variables (Settings -> Secrets and variables -> Actions -> Variables):
+#   AWS_REGION, AWS_DEPLOY_ROLE_ARN, ECR_REPOSITORY, PUBLIC_BASE_URL
+
+name: pipeline
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+# Never run two deployments at the same time; a newer push waits for the running one.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+permissions:
+  contents: read
+
+env:
+  PYTHON_VERSION: "3.12"
+
+jobs:
+  # ------------------------------------------------------------------------------------
+  quality:
+    name: Lint & unit tests
+    runs-on: ubuntu-24.04
+    steps:
+      - name: 1. Checkout
+        uses: actions/checkout@v4
+
+      - name: 2. Install dependencies
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: pip
+          cache-dependency-path: requirements*.txt
+      - run: pip install -r requirements-dev.txt
+
+      - name: 3. Lint (ruff) and type-check (mypy)
+        run: |
+          ruff check .
+          ruff format --check app tests || echo "::warning::run 'ruff format' locally"
+          mypy app
+
+      - name: 4a. Unit tests
+        run: pytest tests/unit --cov=app --cov-report=term-missing --junitxml=unit.xml
+
+  # ------------------------------------------------------------------------------------
+  integration:
+    name: Integration tests (real PostgreSQL, Redis, RabbitMQ)
+    runs-on: ubuntu-24.04
+    needs: quality
+    services:
+      postgres:
+        image: postgres:17-alpine
+        env:
+          POSTGRES_DB: taskplatform
+          POSTGRES_USER: taskplatform
+          POSTGRES_PASSWORD: taskplatform
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd "pg_isready -U taskplatform" --health-interval 5s --health-retries 20
+      redis:
+        image: redis:7.4-alpine
+        ports: ["6379:6379"]
+        options: --health-cmd "redis-cli ping" --health-interval 5s --health-retries 20
+      rabbitmq:
+        image: rabbitmq:4.1-alpine
+        env:
+          RABBITMQ_DEFAULT_USER: taskplatform
+          RABBITMQ_DEFAULT_PASS: taskplatform
+        ports: ["5672:5672"]
+        options: >-
+          --health-cmd "rabbitmq-diagnostics -q ping" --health-interval 10s --health-retries 20
+    env:
+      JWT_SECRET_KEY: ci-only-secret-key-that-is-long-enough-for-validation
+      POSTGRES_HOST: localhost
+      POSTGRES_PASSWORD: taskplatform
+      REDIS_HOST: localhost
+      RABBITMQ_HOST: localhost
+      RABBITMQ_PASSWORD: taskplatform
+      RUN_INTEGRATION: "1"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: pip
+          cache-dependency-path: requirements*.txt
+      - run: pip install -r requirements-dev.txt
+      - name: Apply migrations (also proves they work on an empty database)
+        run: alembic upgrade head
+      - name: 4b. Integration tests
+        run: pytest -m integration tests/integration
+
+  # ------------------------------------------------------------------------------------
+  build:
+    name: Build image${{ github.ref == 'refs/heads/main' && ' & push to ECR' || '' }}
+    runs-on: ubuntu-24.04
+    needs: integration
+    permissions:
+      contents: read
+      id-token: write          # required to request the OIDC token
+    outputs:
+      image_tag: ${{ steps.meta.outputs.tag }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: 6. Tag = short git SHA (immutable, traceable to a commit)
+        id: meta
+        run: echo "tag=${GITHUB_SHA::12}" >> "$GITHUB_OUTPUT"
+
+      - uses: docker/setup-buildx-action@v3
+
+      - name: Configure AWS credentials (OIDC)
+        if: github.ref == 'refs/heads/main'
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ vars.AWS_DEPLOY_ROLE_ARN }}
+          aws-region: ${{ vars.AWS_REGION }}
+
+      - name: Log in to Amazon ECR
+        if: github.ref == 'refs/heads/main'
+        id: ecr
+        uses: aws-actions/amazon-ecr-login@v2
+
+      - name: 5 + 7. Build and push
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          build-args: APP_VERSION=${{ steps.meta.outputs.tag }}
+          push: ${{ github.ref == 'refs/heads/main' }}
+          load: ${{ github.ref != 'refs/heads/main' }}
+          tags: |
+            ${{ github.ref == 'refs/heads/main' && format('{0}/{1}:{2}', steps.ecr.outputs.registry, vars.ECR_REPOSITORY, steps.meta.outputs.tag) || format('taskplatform:{0}', steps.meta.outputs.tag) }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+          provenance: false
+
+      - name: Smoke-test the image (imports, non-root user)
+        if: github.ref != 'refs/heads/main'
+        run: |
+          docker run --rm taskplatform:${{ steps.meta.outputs.tag }} python -c "import app.main, app.workers.main; print('imports ok')"
+          test "$(docker run --rm taskplatform:${{ steps.meta.outputs.tag }} id -u)" = "10001"
+
+  # ------------------------------------------------------------------------------------
+  deploy:
+    name: Deploy to EC2
+    runs-on: ubuntu-24.04
+    needs: build
+    if: github.ref == 'refs/heads/main'
+    # GitHub environment: add "required reviewers" to turn this into a manual approval gate.
+    environment:
+      name: production
+      url: ${{ vars.PUBLIC_BASE_URL }}
+    permissions:
+      contents: read
+      id-token: write
+    env:
+      AWS_REGION: ${{ vars.AWS_REGION }}
+      TAG: ${{ needs.build.outputs.image_tag }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ vars.AWS_DEPLOY_ROLE_ARN }}
+          aws-region: ${{ vars.AWS_REGION }}
+
+      # 8. Deploy. Order matters:
+      #   migrate first (schema must support old AND new code),
+      #   workers next (consume messages from old and new APIs),
+      #   APIs last, app node before edge, one host/container at a time.
+      - name: 8a. Database migrations (on the app node)
+        run: .github/scripts/ssm-deploy.sh migrate "$TAG" app
+      - name: 8b. Broker node (RabbitMQ config + worker-1)
+        run: .github/scripts/ssm-deploy.sh broker "$TAG"
+      - name: 8c. Ops node (worker-2 + monitoring)
+        run: .github/scripts/ssm-deploy.sh ops "$TAG"
+      - name: 8d. App node (api-2, api-3 rolling)
+        run: .github/scripts/ssm-deploy.sh app "$TAG"
+      - name: 8e. Edge node (api-1 + Nginx)
+        run: .github/scripts/ssm-deploy.sh edge "$TAG"
+
+      - name: 9. Public health check through DNS + TLS + Nginx
+        run: |
+          for i in $(seq 1 20); do
+            body=$(curl -fsS --max-time 5 "${{ vars.PUBLIC_BASE_URL }}/health/ready") && break
+            echo "attempt $i failed; retrying"; sleep 5
+          done
+          echo "$body" | jq .
+          test "$(echo "$body" | jq -r .status)" != "unavailable"
+          # Every API instance behind the load balancer should report the new version.
+          for i in $(seq 1 12); do
+            v=$(curl -fsS "${{ vars.PUBLIC_BASE_URL }}/health/live" | jq -r .version)
+            echo "served by version $v"
+            test "$v" = "$TAG"
+          done
+
+      - name: Summary
+        if: always()
+        run: |
+          {
+            echo "### Deployment"
+            echo "- image tag: \`$TAG\`"
+            echo "- url: ${{ vars.PUBLIC_BASE_URL }}"
+            echo "- rollback: run the **rollback** workflow with the previous tag"
+          } >> "$GITHUB_STEP_SUMMARY"

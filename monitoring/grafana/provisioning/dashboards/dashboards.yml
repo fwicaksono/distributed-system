@@ -1,0 +1,10 @@
+apiVersion: 1
+
+providers:
+  - name: task-platform
+    folder: Task Platform
+    type: file
+    disableDeletion: true
+    allowUiUpdates: false     # dashboards are code: change the JSON, not the UI
+    options:
+      path: /var/lib/grafana/dashboards

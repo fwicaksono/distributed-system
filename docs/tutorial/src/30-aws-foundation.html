@@ -1,0 +1,625 @@
+<section class="step" id="aws-account" data-phase="Fondasi AWS" data-title="Persiapan Akun AWS">
+<dl class="brief">
+  <div><dt>Tujuan</dt><dd>Akun AWS yang aman, dengan alarm pengeluaran, identitas admin yang bukan root, dan AWS CLI yang berfungsi.</dd></div>
+  <div><dt>Kenapa</dt><dd>Dua bencana klasik pemula adalah root account yang dibobol dan tagihan yang mengejutkan. Keduanya bisa dicegah dalam 15 menit.</dd></div>
+  <div><dt>Prasyarat</dt><dd>Email, nomor telepon, kartu pembayaran, aplikasi authenticator.</dd></div>
+  <div><dt>Dampak ke arsitektur</dt><dd>Belum ada — ini adalah pijakan untuk semuanya.</dd></div>
+</dl>
+
+<h3>1. Buat akun dan kunci root user</h3>
+<ol>
+<li>Buka <strong>aws.amazon.com → Create an AWS Account</strong>. Pilih plan <em>Free</em> atau <em>Paid</em> sesuai yang ditawarkan; akun baru saat ini mendapat promotional credit — baca syarat terbaru di halaman sign-up.</li>
+<li>Login sebagai root. Buka <strong>IAM → Dashboard → Security recommendations → Add MFA</strong> untuk root user. Pilih <em>Authenticator app</em> (atau passkey/security key). <em>Implikasi keamanan</em>: root bisa menutup akun dan melewati semua policy; password saja tidak cukup.</li>
+<li>Jangan pernah membuat access key untuk root. Jika dashboard menampilkan “Root user has access keys”, hapus.</li>
+</ol>
+
+<h3>2. Alarm budget sebelum membuat apa pun</h3>
+<ol>
+<li>Buka <strong>Billing and Cost Management → Budgets → Create budget</strong>.</li>
+<li>Pilih <em>Use a template → Monthly cost budget</em>. Name: <code>learning-monthly</code>. Budgeted amount: <code>30</code> USD (setup multi-EC2 menghabiskan ≈ $0,15/jam; alarm ini berbunyi jauh sebelum akhir pekan yang terlupa menjadi mahal). Email recipients: email Anda.</li>
+<li>Buat juga <em>Zero spend budget</em> jika ingin tahu begitu ada biaya apa pun yang tertagih.</li>
+</ol>
+
+<h3>3. Identitas admin sehari-hari (bukan root)</h3>
+<p>Untuk manusia, AWS merekomendasikan <strong>IAM Identity Center</strong>: Anda login lewat portal dan CLI menerima credential <em>sementara</em> yang kedaluwarsa dalam hitungan jam.</p>
+<ol>
+<li><strong>IAM Identity Center → Enable</strong> (pilih home region; ia menyimpan identitas untuk seluruh akun).</li>
+<li><strong>Users → Add user</strong>: username <code>admin</code>, email Anda. Selesaikan undangan dan daftarkan MFA.</li>
+<li><strong>Permission sets → Create permission set → Predefined → AdministratorAccess</strong>, session duration 4 jam.</li>
+<li><strong>AWS accounts → pilih akun Anda → Assign users or groups</strong> → <code>admin</code> + <code>AdministratorAccess</code>.</li>
+</ol>
+<x-code lang="bash" title="Konfigurasi CLI dengan credential berumur pendek">
+aws configure sso
+#   SSO session name: learning
+#   SSO start URL: https://d-xxxxxxxxxx.awsapps.com/start   (Identity Center → Settings)
+#   SSO region: ap-southeast-1
+#   CLI default region: ap-southeast-1 ; output: json ; profile name: learning
+export AWS_PROFILE=learning
+aws sso login
+aws sts get-caller-identity
+</x-code>
+<x-out>
+{
+    "UserId": "AROAXXXXXXXXXXXX:admin",
+    "Account": "123456789012",
+    "Arn": "arn:aws:sts::123456789012:assumed-role/AWSReservedSSO_AdministratorAccess_abc123/admin"
+}
+</x-out>
+
+<h3>4. Pilih region</h3>
+<p>Pilih region terdekat dengan Anda (latency) yang menyediakan instance <code>t3</code> dan <code>t4g</code> — hampir semua region menyediakannya. Untuk Indonesia, <code>ap-southeast-3</code> (Jakarta) atau <code>ap-southeast-1</code> (Singapura) adalah pilihan wajar; Singapura biasanya sedikit lebih murah dan fiturnya lebih lengkap. Semua di proyek ini bersifat regional (VPC, EC2, ECR, Parameter Store) kecuali IAM dan budget. Set sekali di <code>infra/aws/cli/00-config.sh</code> dan di region selector pojok kanan atas console — penyebab nomor satu “instance saya hilang” adalah melihat region yang salah.</p>
+
+<details class="errors"><summary>Error yang sering muncul</summary><div class="inner">
+<ul>
+<li><code>Unable to locate credentials</code> — <code>AWS_PROFILE</code> belum di-export, atau session <code>aws sso login</code> sudah kedaluwarsa.</li>
+<li><code>The SSO session associated with this profile has expired</code> — jalankan <code>aws sso login</code> lagi. Ini fitur, bukan bug.</li>
+<li>Resource “hilang” di console — region yang dipilih salah.</li>
+</ul>
+</div></details>
+</section>
+
+<section class="step" id="iam" data-phase="Fondasi AWS" data-title="IAM">
+<dl class="brief">
+  <div><dt>Tujuan</dt><dd>Membuat dua identitas mesin yang dibutuhkan sistem ini — untuk EC2 instance dan untuk GitHub Actions — tanpa satu pun access key berumur panjang.</dd></div>
+  <div><dt>Kenapa</dt><dd>Access key yang bocor adalah penyebab paling umum akun AWS dibobol (tagihan crypto-mining ribuan dolar).</dd></div>
+  <div><dt>Prasyarat</dt><dd>Langkah 15.</dd></div>
+  <div><dt>Dampak ke arsitektur</dt><dd>Setiap AWS API call di sistem ini diautentikasi oleh role dengan permission yang tepat sesuai kebutuhan.</dd></div>
+</dl>
+
+<div class="table-wrap"><table>
+<thead><tr><th>Konsep</th><th>Apa itu</th><th>Di proyek ini</th></tr></thead>
+<tbody>
+<tr><td>IAM user</td><td>Identitas berumur panjang dengan password dan/atau access key</td><td>Tidak dipakai (Identity Center sebagai gantinya)</td></tr>
+<tr><td>IAM role</td><td>Identitas tanpa credential sendiri; di-<em>assume</em> oleh principal yang dipercaya dan menghasilkan credential sementara</td><td><code>taskplatform-ec2-role</code>, <code>taskplatform-github-deploy</code></td></tr>
+<tr><td>Trust policy</td><td>Siapa yang boleh meng-assume role</td><td><code>ec2.amazonaws.com</code>; GitHub OIDC untuk satu repo/branch</td></tr>
+<tr><td>Permission policy</td><td>Apa yang boleh dilakukan role, pada resource apa</td><td>Pull satu repository ECR, baca satu path parameter, …</td></tr>
+<tr><td>Instance profile</td><td>Wadah yang menempelkan role ke EC2</td><td><code>taskplatform-ec2-profile</code></td></tr>
+<tr><td>Access key</td><td>Pasangan key statis untuk API call</td><td>Tidak ada. Jangan pernah.</td></tr>
+<tr><td>Least privilege</td><td>Hanya action dan resource yang benar-benar dibutuhkan</td><td>ARN resource, condition berdasarkan tag, condition berdasarkan branch</td></tr>
+</tbody></table></div>
+
+<h3>Policy</h3>
+<x-file path="infra/aws/iam/ec2-instance-policy.json" lang="json"></x-file>
+<x-file path="infra/aws/iam/github-oidc-trust-policy.json" lang="json"></x-file>
+<x-file path="infra/aws/iam/github-deploy-policy.json" lang="json"></x-file>
+
+<h3>Kenapa access key berumur panjang harus dihindari</h3>
+<ul>
+<li>Tidak pernah kedaluwarsa kecuali ada yang me-rotate, dan biasanya tidak ada yang melakukannya.</li>
+<li>Akhirnya tersimpan di file <code>.env</code>, secret CI, shell history, screenshot, dan repository publik (bot memindai GitHub dalam hitungan menit).</li>
+<li>Tidak bisa dibatasi menjadi “hanya dari workflow ini di branch main”. Trust policy OIDC bisa.</li>
+<li>Session role kedaluwarsa dalam ≤ 1 jam; token yang bocor tidak berguna keesokan harinya.</li>
+</ul>
+
+<h3>Console: role untuk EC2 instance</h3>
+<ol>
+<li><strong>IAM → Roles → Create role</strong>. Trusted entity type: <em>AWS service</em>. Use case: <em>EC2</em>. <em>Kenapa</em>: menghasilkan trust policy seperti di <code>ec2-trust-policy.json</code>.</li>
+<li>Add permissions: cari dan centang <code>AmazonSSMManagedInstanceCore</code> (SSM agent: Session Manager, Run Command). Next.</li>
+<li>Role name <code>taskplatform-ec2-role</code>. Create.</li>
+<li>Buka role tersebut → <strong>Add permissions → Create inline policy → JSON</strong>, tempel <code>ec2-instance-policy.json</code> dengan region dan account ID Anda. Name <code>taskplatform-ec2-inline</code>. <em>Keamanan</em>: ARN resource membatasinya ke satu repository dan satu path parameter — host yang dibobol tidak bisa membaca secret proyek lain.</li>
+</ol>
+<p>Console membuat instance profile secara otomatis untuk role EC2. CLI tidak — lihat script di bawah.</p>
+
+<h3>Console: GitHub OIDC provider dan deploy role</h3>
+<ol>
+<li><strong>IAM → Identity providers → Add provider</strong>. Provider type <em>OpenID Connect</em>. Provider URL <code>https://token.actions.githubusercontent.com</code>. Audience <code>sts.amazonaws.com</code>. Add provider.</li>
+<li><strong>Roles → Create role</strong>. Trusted entity type <em>Web identity</em>. Identity provider <code>token.actions.githubusercontent.com</code>, audience <code>sts.amazonaws.com</code>, GitHub organization = user/org Anda, repository = repo Anda, branch <code>main</code>. <em>Keamanan</em>: tanpa condition repository, <strong>repository GitHub mana pun</strong> bisa meng-assume role Anda.</li>
+<li>Lewati managed policy; name <code>taskplatform-github-deploy</code>; create; tambahkan inline policy dari <code>github-deploy-policy.json</code>.</li>
+</ol>
+
+<h3>Padanan CLI</h3>
+<x-file path="infra/aws/cli/03-iam-ecr-secrets.sh" lang="bash"></x-file>
+
+<h3>Verifikasi</h3>
+<x-code lang="bash">
+aws iam get-role --role-name taskplatform-ec2-role --query 'Role.AssumeRolePolicyDocument'
+aws iam list-attached-role-policies --role-name taskplatform-ec2-role
+aws iam simulate-principal-policy \
+  --policy-source-arn arn:aws:iam::$AWS_ACCOUNT_ID:role/taskplatform-ec2-role \
+  --action-names ssm:GetParametersByPath ecr:PutImage \
+  --resource-arns arn:aws:ssm:$AWS_REGION:$AWS_ACCOUNT_ID:parameter/taskplatform/prod \
+  --query 'EvaluationResults[].[EvalActionName,EvalDecision]' --output table
+</x-code>
+<x-out>
+|  ssm:GetParametersByPath |  allowed       |
+|  ecr:PutImage            |  implicitDeny  |
+</x-out>
+
+<details class="errors"><summary>Error yang sering muncul</summary><div class="inner">
+<ul>
+<li><code>Not authorized to perform sts:AssumeRoleWithWebIdentity</code> di Actions — <code>sub</code> di trust policy tidak cocok (<code>repo:owner/name:ref:refs/heads/main</code>; job yang memakai <code>environment:</code> mengirim <code>repo:owner/name:environment:production</code> — keduanya diizinkan di policy kita).</li>
+<li><code>Credentials could not be loaded</code> di Actions — lupa <code>permissions: id-token: write</code>.</li>
+<li>Instance tidak bisa pull dari ECR — instance profile belum ditempel, atau IMDS dinonaktifkan.</li>
+<li>Jalan pintas yang terlalu permisif: menempelkan <code>AdministratorAccess</code> ke role EC2 “supaya jalan”. Memang akan jalan; begitu juga bagi penyerang.</li>
+</ul>
+</div></details>
+<p><strong>Kapan tidak memakai role?</strong> Workload di luar AWS yang tidak punya opsi identity federation (sebagian sistem on-premise). Itu pun, utamakan IAM Roles Anywhere dibanding access key.</p>
+</section>
+
+<section class="step" id="vpc" data-phase="Fondasi AWS" data-title="VPC">
+<dl class="brief">
+  <div><dt>Tujuan</dt><dd>Membuat jaringan terisolasi <code>10.20.0.0/16</code> beserta Internet Gateway.</dd></div>
+  <div><dt>Kenapa</dt><dd>Service internal butuh alamat yang tidak bisa di-route dari internet.</dd></div>
+  <div><dt>Prasyarat</dt><dd>Langkah 15.</dd></div>
+  <div><dt>Dampak ke arsitektur</dt><dd>Menentukan ruang alamat dan batas “di dalam”.</dd></div>
+</dl>
+
+<div class="table-wrap"><table>
+<thead><tr><th>Aspek</th><th>Jawaban</th></tr></thead>
+<tbody>
+<tr><td>Apa itu</td><td>Virtual network yang terisolasi secara logis di satu region: range IP sendiri, subnet, routing, gateway</td></tr>
+<tr><td>Masalah yang diselesaikan</td><td>Tanpanya, database butuh public IP atau berbagi jaringan datar dengan orang lain</td></tr>
+<tr><td>Berinteraksi dengan</td><td>Subnet (memotong range), route table (jalur), IGW/NAT (pintu keluar), SG (filter), ENI milik EC2 (menempel ke VPC)</td></tr>
+<tr><td>Kapan tidak perlu membuat sendiri</td><td>Eksperimen cepat: default VPC sudah cukup. Untuk apa pun yang punya service privat, buat sendiri</td></tr>
+<tr><td>Keamanan</td><td>Privat secara default: tidak ada yang masuk tanpa IGW, route, dan public IP</td></tr>
+<tr><td>Kesalahan umum</td><td>CIDR terlalu kecil; CIDR tumpang tindih dengan jaringan kantor/VPN; menghapus default VPC tanpa perlu</td></tr>
+</tbody></table></div>
+
+<h3>CIDR dalam satu paragraf</h3>
+<p><code>10.20.0.0/16</code> berarti “16 bit pertama tetap (10.20), 16 bit sisanya bebas”: 2<sup>16</sup> = 65.536 alamat, 10.20.0.0–10.20.255.255. <code>/24</code> menetapkan 24 bit: 256 alamat (AWS memakai 5 per subnet, tersisa 251). Kita memilih <code>10.20.0.0/16</code> dan bukan <code>10.0.0.0/16</code> karena router rumah, VPN, dan VPC lain sering memakai 10.0 — VPC peering atau koneksi VPN mensyaratkan range yang tidak tumpang tindih. Tetap di dalam ruang privat RFC 1918: <code>10.0.0.0/8</code>, <code>172.16.0.0/12</code>, <code>192.168.0.0/16</code>.</p>
+
+<h3>Console</h3>
+<ol>
+<li><strong>VPC → Your VPCs → Create VPC</strong>. Resources to create: <em>VPC only</em> (kita bangun bagian-bagiannya secara manual agar setiap bagian terlihat; “VPC and more” membuat semuanya sekaligus). Name tag <code>taskplatform-vpc</code>. IPv4 CIDR <code>10.20.0.0/16</code>. IPv6: none. Tenancy: <em>Default</em> (dedicated jauh lebih mahal).</li>
+<li>Pilih VPC → <strong>Actions → Edit VPC settings</strong>: aktifkan <em>DNS resolution</em> dan <em>DNS hostnames</em>.</li>
+<li><strong>Internet gateways → Create internet gateway</strong>, name <code>taskplatform-igw</code> → <strong>Actions → Attach to VPC</strong> → <code>taskplatform-vpc</code>.</li>
+</ol>
+
+<h3>Padanan CLI</h3>
+<x-file path="infra/aws/cli/01-network.sh" lang="bash"></x-file>
+
+<h3>Verifikasi</h3>
+<x-code lang="bash">
+aws ec2 describe-vpcs --filters Name=tag:Name,Values=taskplatform-vpc \
+  --query 'Vpcs[0].[VpcId,CidrBlock,State]' --output text
+aws ec2 describe-internet-gateways --filters Name=attachment.vpc-id,Values=<vpc-id> \
+  --query 'InternetGateways[0].Attachments' --output table
+</x-code>
+<x-out>
+vpc-0a1b2c3d4e5f67890   10.20.0.0/16   available
+|  available  |  vpc-0a1b2c3d4e5f67890  |
+</x-out>
+</section>
+
+<section class="step" id="subnets" data-phase="Fondasi AWS" data-title="Subnet">
+<dl class="brief">
+  <div><dt>Tujuan</dt><dd>Public subnet dan private subnet beserta route table — termasuk NAT untuk akses keluar saja.</dd></div>
+  <div><dt>Kenapa</dt><dd>“Public” dan “private” ditentukan oleh routing. Di sinilah isolasi benar-benar terjadi.</dd></div>
+  <div><dt>Prasyarat</dt><dd>Langkah 17.</dd></div>
+  <div><dt>Dampak ke arsitektur</dt><dd>Hanya node edge yang bisa dijangkau dari internet.</dd></div>
+</dl>
+
+<div class="table-wrap"><table>
+<thead><tr><th>Subnet</th><th>CIDR</th><th>AZ</th><th>Route table</th><th>Berisi</th></tr></thead>
+<tbody>
+<tr><td>public-a</td><td><code>10.20.1.0/24</code></td><td>a</td><td>public-rt: <code>10.20.0.0/16 → local</code>, <code>0.0.0.0/0 → igw</code></td><td>edge, NAT instance</td></tr>
+<tr><td>public-b</td><td><code>10.20.2.0/24</code></td><td>b</td><td>public-rt</td><td>cadangan (ALB butuh 2 AZ)</td></tr>
+<tr><td>private-a</td><td><code>10.20.11.0/24</code></td><td>a</td><td>private-rt: <code>local</code>, <code>0.0.0.0/0 → NAT</code></td><td>app, broker, ops, data</td></tr>
+<tr><td>private-b</td><td><code>10.20.12.0/24</code></td><td>b</td><td>private-rt</td><td>cadangan (RDS Multi-AZ)</td></tr>
+</tbody></table></div>
+
+<div class="table-wrap"><table>
+<thead><tr><th>Komponen</th><th>Apa itu</th><th>Kenapa dipakai di sini</th><th>Kapan tidak</th></tr></thead>
+<tbody>
+<tr><td>Route table</td><td>Aturan: CIDR tujuan → target. Match paling spesifik yang menang; <code>local</code> mencakup seluruh VPC</td><td>Membuat subnet menjadi public atau private</td><td>—</td></tr>
+<tr><td>Internet Gateway</td><td>NAT dua arah antara public IP dan private IP instance, untuk seluruh VPC</td><td>Node edge bisa dijangkau</td><td>Tidak ada service yang menghadap publik (pakai SSM + endpoint saja)</td></tr>
+<tr><td>NAT Gateway</td><td>NAT managed untuk arah keluar saja, ~$0,045/jam + $0,045/GB</td><td>Production: reliable, 5–100 Gbps</td><td>Belajar dengan budget terbatas: ~$33/bulan meskipun idle</td></tr>
+<tr><td>NAT instance</td><td>EC2 yang menjalankan iptables MASQUERADE, t4g.nano ~$3/bulan</td><td><strong>Dipakai di sini</strong>: mengajarkan Linux networking, murah</td><td>Production: Anda yang harus patch; SPOF untuk traffic keluar</td></tr>
+<tr><td>S3 gateway endpoint</td><td>Route privat gratis ke S3</td><td>Layer image ECR disajikan dari S3: pull tidak melewati NAT</td><td>—</td></tr>
+</tbody></table></div>
+
+<h3>Console</h3>
+<ol>
+<li><strong>VPC → Subnets → Create subnet</strong>: VPC <code>taskplatform-vpc</code>. Tambahkan empat subnet dengan nama, AZ, dan CIDR sesuai tabel.</li>
+<li>Public subnet: <strong>Actions → Edit subnet settings</strong> → biarkan <em>Enable auto-assign public IPv4 address</em> <strong>mati</strong>. <em>Kenapa</em>: setiap public IPv4 ditagih; kita menempelkan Elastic IP secara eksplisit hanya di tempat yang perlu.</li>
+<li><strong>Route tables → Create route table</strong> <code>taskplatform-public-rt</code> → <strong>Routes → Edit routes → Add route</strong> <code>0.0.0.0/0</code> target <em>Internet Gateway</em>. <strong>Subnet associations → Edit</strong> → public-a, public-b.</li>
+<li>Buat <code>taskplatform-private-rt</code>, asosiasikan private-a dan private-b. Untuk sementara hanya ada route <code>local</code>; route ke NAT ditambahkan di langkah 20 setelah NAT instance ada.</li>
+<li><strong>Endpoints → Create endpoint</strong>: AWS services, <code>com.amazonaws.&lt;region&gt;.s3</code>, type <em>Gateway</em>, kedua route table.</li>
+</ol>
+
+<h3>Alur traffic</h3>
+<div class="diagram" role="img" aria-label="Alur traffic: masuk lewat IGW ke edge; instance privat keluar lewat NAT">
+<svg viewBox="0 0 900 300" xmlns="http://www.w3.org/2000/svg">
+  <defs><marker id="ah4" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0,0 L10,5 L0,10 z" class="arrow"/></marker></defs>
+  <rect x="20" y="20" width="130" height="50" rx="6" class="box-soft"/><text x="85" y="50" text-anchor="middle" class="t-label" font-size="13">Internet</text>
+  <rect x="20" y="130" width="130" height="50" rx="6" class="box"/><text x="85" y="152" text-anchor="middle" class="t-label" font-size="13">IGW</text><text x="85" y="170" text-anchor="middle" font-size="10">public ↔ private IP</text>
+  <rect x="220" y="100" width="300" height="180" rx="8" class="zone-public"/><text x="236" y="120" class="t-dim" font-size="11">public-a 10.20.1.0/24</text>
+  <rect x="245" y="135" width="120" height="50" rx="6" class="box"/><text x="305" y="158" text-anchor="middle" class="t-label" font-size="12">edge</text><text x="305" y="175" text-anchor="middle" font-size="10">10.20.1.10</text>
+  <rect x="385" y="205" width="115" height="50" rx="6" class="box"/><text x="442" y="228" text-anchor="middle" class="t-label" font-size="12">NAT</text><text x="442" y="245" text-anchor="middle" font-size="10">10.20.1.20</text>
+  <rect x="580" y="100" width="300" height="180" rx="8" class="zone-private"/><text x="596" y="120" class="t-dim" font-size="11">private-a 10.20.11.0/24</text>
+  <rect x="640" y="135" width="120" height="50" rx="6" class="box"/><text x="700" y="158" text-anchor="middle" class="t-label" font-size="12">app</text><text x="700" y="175" text-anchor="middle" font-size="10">10.20.11.20</text>
+  <rect x="640" y="210" width="120" height="50" rx="6" class="box"/><text x="700" y="233" text-anchor="middle" class="t-label" font-size="12">data</text><text x="700" y="250" text-anchor="middle" font-size="10">10.20.11.50</text>
+  <path d="M85,70 L85,130" class="wire-amber" marker-end="url(#ah4)"/>
+  <path d="M150,155 L245,160" class="wire-amber" marker-end="url(#ah4)"/>
+  <path d="M365,160 L640,160" class="wire-amber" marker-end="url(#ah4)"/><text x="500" y="150" text-anchor="middle" font-size="10" class="t-dim">:8000 (sg-app mengizinkan sg-edge)</text>
+  <path d="M700,185 L700,210" class="wire" marker-end="url(#ah4)"/>
+  <path d="M640,240 L500,232" class="wire-cobalt" marker-end="url(#ah4)"/><text x="570" y="275" text-anchor="middle" font-size="10" class="t-dim">apt / ECR / SSM → 0.0.0.0/0 → NAT</text>
+  <path d="M385,225 C200,240 130,210 110,180" class="wire-cobalt" marker-end="url(#ah4)"/>
+</svg>
+<p class="cap">Masuk (amber): hanya ke edge. Keluar dari private (cobalt): source address diganti menjadi Elastic IP milik NAT; balasan kembali lewat jalur yang sama; tidak ada yang bisa memulai koneksi ke dalam.</p>
+</div>
+
+<h3>Public IP, private IP, Elastic IP</h3>
+<ul>
+<li><strong>Private IP</strong>: melekat di network interface instance, dipakai untuk semua traffic di dalam VPC, tetap sepanjang umur instance.</li>
+<li><strong>Public IP</strong>: sama sekali tidak ada di interface — IGW yang memetakannya ke private IP. Public IP yang di-assign otomatis berubah saat stop/start.</li>
+<li><strong>Elastic IP</strong>: public IP milik Anda sampai di-release; bisa dipindahkan ke instance lain. Dibutuhkan untuk DNS (langkah 29).</li>
+</ul>
+
+<h3>Verifikasi (setelah langkah 20)</h3>
+<x-code lang="bash">
+ssh tp-app 'ip -4 addr show | grep inet; ip route; curl -s https://checkip.amazonaws.com'
+</x-code>
+<x-out>
+inet 10.20.11.20/24 metric 100 brd 10.20.11.255 scope global ens5
+default via 10.20.11.1 dev ens5 proto dhcp src 10.20.11.20 metric 100
+203.0.113.45        <- Elastic IP milik NAT instance, bukan milik node app
+</x-out>
+<details class="errors"><summary>Error yang sering muncul</summary><div class="inner">
+<ul>
+<li>Instance privat tidak bisa <code>apt update</code> — route NAT belum ada, source/dest check NAT masih aktif, atau SG NAT tidak mengizinkan CIDR VPC.</li>
+<li>Edge tidak bisa dijangkau padahal SG mengizinkan 443 — subnet terasosiasi ke private route table, atau tidak ada public/Elastic IP.</li>
+<li>“Subnet-nya public tapi instance tidak bisa dijangkau” — auto-assign public IP mati (memang disengaja di sini); tempelkan EIP.</li>
+</ul>
+</div></details>
+</section>
+
+<section class="step" id="security-groups" data-phase="Fondasi AWS" data-title="Security Group">
+<dl class="brief">
+  <div><dt>Tujuan</dt><dd>Satu Security Group per role; setiap port internal hanya dibuka untuk grup yang membutuhkannya.</dd></div>
+  <div><dt>Kenapa</dt><dd>Subnet menentukan apa yang bisa di-route. Security Group menentukan apa yang <em>diizinkan</em> — per instance, per port, per sumber.</dd></div>
+  <div><dt>Prasyarat</dt><dd>Langkah 18.</dd></div>
+  <div><dt>Dampak ke arsitektur</dt><dd>Kontrol jaringan utama. Satu kesalahan di sini bisa mengekspos database ke internet.</dd></div>
+</dl>
+
+<div class="table-wrap"><table>
+<thead><tr><th>Aspek</th><th>Jawaban</th></tr></thead>
+<tbody>
+<tr><td>Apa itu</td><td>Virtual firewall yang stateful dan hanya berisi aturan allow, menempel di network interface, ditegakkan AWS di luar instance</td></tr>
+<tr><td>Stateful</td><td>Jika inbound 443 diizinkan, balasannya otomatis boleh keluar — tidak perlu outbound rule untuk response</td></tr>
+<tr><td>Inbound rules</td><td>Default: tolak semua. Kita menambahkan allow secara eksplisit</td></tr>
+<tr><td>Outbound rules</td><td>Default: izinkan semua. Dibiarkan, karena instance butuh apt/ECR/SSM. Mengetatkan egress adalah latihan production yang bagus</td></tr>
+<tr><td>Source = SG lain</td><td>“Interface mana pun yang membawa sg-edge” — tetap berlaku meski IP berubah dan instance bertambah</td></tr>
+<tr><td>vs Network ACL</td><td>NACL stateless, di level subnet, bisa allow <em>dan</em> deny, berurutan. Jarang dibutuhkan; default-nya allow semua</td></tr>
+<tr><td>Kesalahan umum</td><td><code>0.0.0.0/0</code> di 22/5432/6379 “sementara”; satu SG untuk semuanya; lupa bahwa SG tidak memfilter traffic <em>di dalam</em> satu instance</td></tr>
+</tbody></table></div>
+
+<h3>Aturan, dan kenapa setiap port dibuka</h3>
+<div class="table-wrap"><table>
+<thead><tr><th>SG</th><th>Port</th><th>Source</th><th>Alasan</th></tr></thead>
+<tbody>
+<tr><td>sg-edge</td><td>80</td><td>0.0.0.0/0</td><td>Challenge HTTP-01 Let’s Encrypt; redirect ke HTTPS</td></tr>
+<tr><td>sg-edge</td><td>443</td><td>0.0.0.0/0, ::/0</td><td>User</td></tr>
+<tr><td>sg-edge</td><td>22</td><td><em>IP Anda</em>/32</td><td>SSH admin; bastion untuk node privat</td></tr>
+<tr><td>sg-edge</td><td>8000, 9100</td><td>sg-ops</td><td>Prometheus scrape api-1 dan node-exporter</td></tr>
+<tr><td>sg-app</td><td>8000–8001</td><td>sg-edge</td><td>Nginx → api-2, api-3</td></tr>
+<tr><td>sg-app</td><td>8000–8001, 9100</td><td>sg-ops</td><td>Metrics</td></tr>
+<tr><td>sg-app/broker/ops/data</td><td>22</td><td>sg-edge</td><td>SSH hanya lewat jump host</td></tr>
+<tr><td>sg-broker</td><td>5672</td><td>sg-edge, sg-app, sg-ops</td><td>API mem-publish; worker-2 meng-consume</td></tr>
+<tr><td>sg-broker</td><td>15692, 9101, 9100</td><td>sg-ops</td><td>Metrics RabbitMQ, worker-1, node</td></tr>
+<tr><td>sg-data</td><td>5432, 6379</td><td>sg-edge, sg-app, sg-broker, sg-ops</td><td>Setiap host yang menjalankan kode API atau worker</td></tr>
+<tr><td>sg-data</td><td>9187, 9121, 9100</td><td>sg-ops</td><td>Exporter</td></tr>
+<tr><td>sg-nat</td><td>semua</td><td>10.20.0.0/16</td><td>Traffic yang akan diteruskan ke internet</td></tr>
+</tbody></table></div>
+<p>Tidak dibuka di mana pun: 15672 (RabbitMQ UI), 3000 (Grafana), 9090 (Prometheus) — ketiganya bind ke <code>127.0.0.1</code> dan diakses lewat SSH atau SSM port forwarding.</p>
+
+<h3>Console</h3>
+<ol>
+<li><strong>EC2 → Network &amp; Security → Security Groups → Create security group</strong>. Name <code>taskplatform-edge</code>, description, VPC <code>taskplatform-vpc</code>. Buat keenam grup dalam keadaan <em>kosong</em> dulu — rule yang mereferensikan grup lain membutuhkan grup itu sudah ada.</li>
+<li>Edit <strong>Inbound rules → Add rule</strong> setiap grup: Type <em>Custom TCP</em>, Port range, Source <em>Custom</em> → ketik <code>sg-</code> lalu pilih grup, Description (akan terlihat saat audit — tulis alasannya).</li>
+<li>Untuk SSH di sg-edge pilih Source <em>My IP</em>. <em>Keamanan</em>: IP rumah Anda bisa berubah; update rule-nya, jangan diperlebar.</li>
+</ol>
+<x-file path="infra/aws/cli/02-security-groups.sh" lang="bash"></x-file>
+
+<h3>Verifikasi</h3>
+<x-code lang="bash">
+# Dari laptop: hanya 80/443/22 yang menjawab di edge; selain itu tidak
+nc -vz -w 3 <edge-eip> 443     # succeeded
+nc -vz -w 3 <edge-eip> 8000    # timed out  (SG membuang diam-diam -> timeout, bukan "refused")
+# Dari node app: database bisa dijangkau, port metrics milik edge tidak
+ssh tp-app 'nc -vz -w 3 10.20.11.50 5432; nc -vz -w 3 10.20.1.10 9100'
+</x-code>
+<x-out>
+Connection to 10.20.11.50 port 5432 [tcp/postgresql] succeeded!
+nc: connect to 10.20.1.10 port 9100 (tcp) timed out
+</x-out>
+<x-note kind="tip" title="Timeout vs connection refused">
+<p><strong>Timeout</strong> = packet dibuang: oleh Security Group, NACL, route, atau ufw. <strong>Connection refused</strong> = host menjawab dengan TCP RST: jalur jaringannya berfungsi tapi tidak ada yang listen di port itu (service mati, bind ke interface lain). Pembedaan sederhana ini memangkas setengah waktu debugging jaringan.</p>
+</x-note>
+</section>
+
+<section class="step" id="ec2" data-phase="Fondasi AWS" data-title="EC2">
+<dl class="brief">
+  <div><dt>Tujuan</dt><dd>Menjalankan NAT instance dan kelima node dengan subnet, SG, private IP, role, disk, dan setting metadata yang tepat.</dd></div>
+  <div><dt>Kenapa</dt><dd>Setiap setting di halaman launch adalah keputusan keamanan, biaya, atau reliability.</dd></div>
+  <div><dt>Prasyarat</dt><dd>Langkah 16–19.</dd></div>
+  <div><dt>Dampak ke arsitektur</dt><dd>Sistem kini punya failure domain yang nyata dan independen.</dd></div>
+</dl>
+
+<div class="table-wrap"><table>
+<thead><tr><th>Node</th><th>Type</th><th>vCPU / RAM</th><th>Subnet</th><th>SG</th><th>Private IP</th><th>Disk</th></tr></thead>
+<tbody>
+<tr><td>nat</td><td>t4g.nano (ARM, AL2023)</td><td class="num">2 / 0,5 GiB</td><td>public-a</td><td>sg-nat</td><td>10.20.1.20</td><td>default 8 GiB</td></tr>
+<tr><td>edge</td><td>t3.small</td><td class="num">2 / 2 GiB</td><td>public-a</td><td>sg-edge</td><td>10.20.1.10</td><td>20 GiB gp3</td></tr>
+<tr><td>app</td><td>t3.small</td><td class="num">2 / 2 GiB</td><td>private-a</td><td>sg-app</td><td>10.20.11.20</td><td>20 GiB gp3</td></tr>
+<tr><td>broker</td><td>t3.small</td><td class="num">2 / 2 GiB</td><td>private-a</td><td>sg-broker</td><td>10.20.11.30</td><td>20 GiB gp3</td></tr>
+<tr><td>ops</td><td>t3.small</td><td class="num">2 / 2 GiB</td><td>private-a</td><td>sg-ops</td><td>10.20.11.40</td><td>20 GiB gp3</td></tr>
+<tr><td>data</td><td>t3.medium</td><td class="num">2 / 4 GiB</td><td>private-a</td><td>sg-data</td><td>10.20.11.50</td><td>20 GiB root + 20 GiB data (tidak ikut terhapus saat terminate)</td></tr>
+</tbody></table></div>
+
+<h3>Console: launch satu node (ulangi per baris)</h3>
+<ol>
+<li><strong>EC2 → Instances → Launch instances</strong>. Name <code>taskplatform-app</code>; <em>Add additional tags</em>: <code>Project=taskplatform</code>, <code>Role=app</code>. <em>Kenapa</em>: CI menargetkan deploy berdasarkan tag ini; script teardown menemukan resource berdasarkan <code>Project</code>.</li>
+<li><strong>Application and OS Images</strong>: <em>Ubuntu Server 24.04 LTS (HVM), SSD Volume Type</em>, 64-bit (x86). Khusus NAT: <em>Amazon Linux 2023</em>, 64-bit (Arm).</li>
+<li><strong>Instance type</strong>: sesuai tabel. <em>Kenapa t3</em>: burstable — baseline murah (20 % CPU untuk small) dengan credit untuk lonjakan; cocok untuk belajar yang sebagian besar waktunya idle. Load test yang panjang akan menghabiskan credit (langkah 37).</li>
+<li><strong>Key pair (login)</strong>: buat <code>taskplatform-admin</code>, type <em>ED25519</em>, format <code>.pem</code>. Pindahkan ke <code>~/.ssh/</code>, <code>chmod 400</code>. AWS tidak akan menampilkannya lagi.</li>
+<li><strong>Network settings → Edit</strong>: VPC <code>taskplatform-vpc</code>; Subnet sesuai tabel; <em>Auto-assign public IP</em>: <strong>Disable</strong>; Firewall: <em>Select existing security group</em> → sesuai tabel. Buka <em>Advanced network configuration</em> → Primary IP: private IP tetap sesuai tabel.</li>
+<li><strong>Configure storage</strong>: 20 GiB <em>gp3</em>, <em>Encrypted</em>: Yes. Node data: <em>Add new volume</em> 20 GiB gp3 terenkripsi, device <code>/dev/sdf</code>, <em>Delete on termination</em>: No.</li>
+<li><strong>Advanced details</strong>: IAM instance profile <code>taskplatform-ec2-role</code>; Metadata accessible <em>Enabled</em>; Metadata version <strong>V2 only (token required)</strong>; Metadata response hop limit <strong>1</strong>; Credit specification <em>Standard</em>. Khusus NAT: tempel <code>nat-instance-user-data.sh</code> ke <em>User data</em>.</li>
+<li>Launch. Untuk NAT: <strong>Actions → Networking → Change source/destination check → Stop</strong>, allocate dan associate Elastic IP, lalu tambahkan route <code>0.0.0.0/0 → Instance (nat)</code> di <code>taskplatform-private-rt</code>.</li>
+</ol>
+
+<x-note kind="danger" title="IMDSv2 dan hop limit 1">
+<p>Instance metadata service (169.254.169.254) membagikan credential sementara milik role. Dengan IMDSv1, bug server-side request forgery (“tolong ambilkan URL ini”) bisa membocorkannya. V2 membutuhkan token yang didapat lewat PUT; hop limit 1 berarti token tidak bisa melewati Docker bridge, sehingga container yang dibobol pun tidak bisa mendapatkan instance role.</p>
+</x-note>
+
+<h3>Padanan CLI</h3>
+<x-file path="infra/aws/cli/04-instances.sh" lang="bash"></x-file>
+<x-file path="infra/aws/cli/nat-instance-user-data.sh" lang="bash"></x-file>
+
+<h3>Verifikasi</h3>
+<x-code lang="bash">
+aws ec2 describe-instances --filters Name=tag:Project,Values=taskplatform Name=instance-state-name,Values=running \
+  --query 'Reservations[].Instances[].[Tags[?Key==`Role`]|[0].Value,InstanceType,PrivateIpAddress,PublicIpAddress,MetadataOptions.HttpTokens]' \
+  --output table
+aws ssm describe-instance-information --query 'InstanceInformationList[].[InstanceId,PingStatus,PlatformName]' --output table
+</x-code>
+<x-out>
+|  nat    |  t4g.nano  |  10.20.1.20   |  203.0.113.45 |  required |
+|  edge   |  t3.small  |  10.20.1.10   |  198.51.100.7 |  required |
+|  app    |  t3.small  |  10.20.11.20  |  None         |  required |
+...
+|  i-0abc...  |  Online  |  Ubuntu  |
+</x-out>
+<p><code>PingStatus: Online</code> untuk node privat membuktikan NAT berfungsi: SSM agent berhasil menjangkau AWS melewatinya.</p>
+
+<details class="errors"><summary>Error yang sering muncul</summary><div class="inner">
+<ul>
+<li><code>InvalidParameterValue: Address 10.20.11.20 is in use</code> — IP sudah dipakai (ENI milik instance yang baru di-terminate bisa masih ada sekitar satu menit).</li>
+<li><code>VcpuLimitExceeded</code> — akun baru punya quota vCPU yang kecil: <strong>Service Quotas → EC2 → Running On-Demand Standard instances</strong> → request increase.</li>
+<li>Node privat tidak muncul di SSM — tidak ada route NAT, atau role tidak punya <code>AmazonSSMManagedInstanceCore</code>. Tunggu 5 menit setelah diperbaiki; agent akan mencoba lagi.</li>
+<li><code>Unsupported</code> untuk t4g dengan AMI x86 — arsitektur tidak cocok.</li>
+</ul>
+</div></details>
+<p><strong>Kapan tidak memakai EC2</strong>: ketika tidak ingin mengurus patch sistem operasi. ECS Fargate atau App Runner menjalankan image yang sama tanpa server — dengan biaya per unit lebih tinggi dan lebih sedikit yang bisa dipelajari tentang Linux.</p>
+</section>
+
+<section class="step" id="ssh" data-phase="Fondasi AWS" data-title="SSH">
+<dl class="brief">
+  <div><dt>Tujuan</dt><dd>Menjangkau setiap node dengan aman: edge secara langsung, node privat lewat edge, atau semuanya lewat SSM tanpa port yang terbuka.</dd></div>
+  <div><dt>Kenapa</dt><dd>Operasional butuh shell. Cara Anda mendapatkannya adalah bagian dari attack surface.</dd></div>
+  <div><dt>Prasyarat</dt><dd>Langkah 20; key ada di <code>~/.ssh/taskplatform-admin.pem</code>.</dd></div>
+  <div><dt>Dampak ke arsitektur</dt><dd>Edge berperan sebagai bastion (jump host).</dd></div>
+</dl>
+
+<h3>Cara kerja autentikasi key</h3>
+<p>Saat launch, AWS menaruh <em>public</em> key Anda di <code>/home/ubuntu/.ssh/authorized_keys</code>. Saat Anda connect, server mengirim challenge; client menandatanganinya dengan <em>private</em> key; server memverifikasi tanda tangan itu dengan public key. Private key tidak pernah meninggalkan laptop Anda, dan tidak ada password yang bisa di-brute-force.</p>
+
+<x-code lang="text" title="~/.ssh/config">
+Host tp-edge
+  HostName 198.51.100.7          # Elastic IP edge
+  User ubuntu
+  IdentityFile ~/.ssh/taskplatform-admin.pem
+  IdentitiesOnly yes
+  ServerAliveInterval 30
+
+Host tp-app tp-broker tp-ops tp-data
+  User ubuntu
+  IdentityFile ~/.ssh/taskplatform-admin.pem
+  IdentitiesOnly yes
+  ProxyJump tp-edge              # TCP diteruskan lewat edge; key tetap di lokal
+
+Host tp-app
+  HostName 10.20.11.20
+Host tp-broker
+  HostName 10.20.11.30
+Host tp-ops
+  HostName 10.20.11.40
+Host tp-data
+  HostName 10.20.11.50
+</x-code>
+<x-code lang="bash" title="Connect, copy file, forward port">
+ssh tp-edge
+ssh tp-data 'hostname; uptime'
+scp -r deploy tp-app:/tmp/
+ssh -N -L 3000:127.0.0.1:3000 -L 9090:127.0.0.1:9090 tp-ops      # Grafana + Prometheus di localhost
+ssh -N -L 15672:127.0.0.1:15672 tp-broker                         # RabbitMQ UI
+</x-code>
+<p><strong>Jangan pernah memakai agent forwarding (<code>ssh -A</code>) melalui bastion</strong>: siapa pun yang punya root di bastion bisa memakai agent Anda. <code>ProxyJump</code> tidak mengeksposnya.</p>
+
+<h3>SSM Session Manager: SSH tanpa SSH</h3>
+<x-code lang="bash">
+aws ssm start-session --target i-0abc123def4567890
+aws ssm start-session --target <ops-instance-id> \
+  --document-name AWS-StartPortForwardingSession \
+  --parameters 'portNumber=["3000"],localPortNumber=["3000"]'
+</x-code>
+<p>Tanpa inbound port 22, tanpa file key, IAM yang menentukan siapa boleh masuk, dan setiap session tercatat di CloudTrail. Setelah ini berfungsi, Anda bisa menghapus semua rule port 22. SSH tetap diajarkan di tutorial ini karena Anda akan menemuinya di mana-mana.</p>
+
+<h3>Hardening sshd (edge)</h3>
+<x-code lang="bash" title="/etc/ssh/sshd_config.d/99-hardening.conf">
+sudo tee /etc/ssh/sshd_config.d/99-hardening.conf >/dev/null <<'EOF'
+PasswordAuthentication no
+KbdInteractiveAuthentication no
+PermitRootLogin no
+MaxAuthTries 3
+AllowUsers ubuntu
+EOF
+sudo sshd -t && sudo systemctl reload ssh
+</x-code>
+
+<details class="errors"><summary>Error yang sering muncul</summary><div class="inner">
+<div class="table-wrap"><table>
+<thead><tr><th>Error</th><th>Penyebab</th><th>Solusi</th></tr></thead>
+<tbody>
+<tr><td><code>WARNING: UNPROTECTED PRIVATE KEY FILE!</code></td><td>Key bisa dibaca user lain</td><td><code>chmod 400 ~/.ssh/taskplatform-admin.pem</code></td></tr>
+<tr><td><code>Permission denied (publickey)</code></td><td>User salah (Ubuntu = <code>ubuntu</code>, AL2023 = <code>ec2-user</code>) atau key salah</td><td><code>ssh -v</code> menunjukkan key mana yang dicoba</td></tr>
+<tr><td><code>Connection timed out</code></td><td>SG tidak mengizinkan IP Anda saat ini</td><td><code>curl checkip.amazonaws.com</code>, update rule</td></tr>
+<tr><td><code>REMOTE HOST IDENTIFICATION HAS CHANGED</code></td><td>Instance baru memakai IP yang sama</td><td><code>ssh-keygen -R &lt;ip&gt;</code> — hanya jika Anda <em>yakin</em> itu instance baru</td></tr>
+</tbody></table></div>
+</div></details>
+</section>
+
+<section class="step" id="linux-admin" data-phase="Fondasi AWS" data-title="Administrasi Linux">
+<dl class="brief">
+  <div><dt>Tujuan</dt><dd>Mengoperasikan host: user, permission, service, proses, log, disk, memori, jaringan — dan mendiagnosis delapan kegagalan klasik.</dd></div>
+  <div><dt>Kenapa</dt><dd>Container berjalan di atas Linux. Ketika Docker tidak bisa menjelaskan apa yang salah, Linux bisa.</dd></div>
+  <div><dt>Prasyarat</dt><dd>Langkah 21.</dd></div>
+  <div><dt>Dampak ke arsitektur</dt><dd>Anda menjadi operator lima server.</dd></div>
+</dl>
+
+<h3>Bootstrap setiap node</h3>
+<x-file path="deploy/scripts/bootstrap-host.sh" lang="bash"></x-file>
+<x-code lang="bash" title="Jalankan untuk setiap role (dari laptop)">
+cd distributed-task-platform
+for role in edge app broker ops data; do
+  ip=$(grep -E "^$(echo $role | tr a-z A-Z)_IP=" deploy/node.env.example | cut -d= -f2)
+  sed -e "s/^ROLE=.*/ROLE=$role/" -e "s/^PRIVATE_IP=.*/PRIVATE_IP=$ip/" \
+      -e "s/^AWS_REGION=.*/AWS_REGION=$AWS_REGION/" \
+      -e "s/^ECR_REGISTRY=.*/ECR_REGISTRY=$AWS_ACCOUNT_ID.dkr.ecr.$AWS_REGION.amazonaws.com/" \
+      -e "s/^DOMAIN=.*/DOMAIN=api.example.com/" deploy/node.env.example > /tmp/node-$role.env
+  scp -r deploy /tmp/node-$role.env tp-$role:/tmp/
+  ssh tp-$role "sudo /tmp/deploy/scripts/bootstrap-host.sh $role /tmp/node-$role.env"
+done
+</x-code>
+
+<h3>User, sudo, permission</h3>
+<x-code lang="bash">
+whoami; id                                  # uid, grup (ubuntu ada di grup sudo)
+sudo adduser --disabled-password --gecos "" deploy
+sudo usermod -aG docker deploy              # grup docker == setara root! berikan dengan sadar
+sudo -l                                     # apa saja yang boleh saya jalankan sebagai root?
+ls -l /opt/taskplatform/shared              # drwx------ root root: secret
+#  -rw------- 1 root root  412 app.env
+#   ^^^ owner rw, group ---, others ---   (chmod 600)
+sudo chmod 600 /opt/taskplatform/shared/*.env
+sudo chown -R root:root /opt/taskplatform/shared
+sudo chmod 750 /opt/taskplatform/releases   # rwx owner, r-x group, --- others
+namei -l /opt/taskplatform/shared/app.env   # permission di setiap komponen path
+</x-code>
+<p>Bit permission: <code>r=4 w=2 x=1</code> untuk owner, group, others. <code>600</code> = owner read/write; <code>755</code> = semua bisa membaca dan masuk, hanya owner yang bisa menulis. Pada directory, <code>x</code> berarti “boleh masuk”.</p>
+
+<h3>Service: systemctl dan journalctl</h3>
+<x-file path="deploy/systemd/taskplatform.service" lang="ini"></x-file>
+<x-code lang="bash">
+systemctl status docker taskplatform --no-pager
+sudo systemctl restart taskplatform
+systemctl list-timers certbot-renew.timer
+systemctl --failed
+journalctl -u docker --since "30 min ago" --no-pager
+journalctl -u taskplatform -b                     # hanya boot saat ini
+journalctl -k | grep -i -E 'oom|killed process'   # kernel: OOM killer
+journalctl -p err -S today                        # error dari semua service
+</x-code>
+
+<h3>Proses dan resource</h3>
+<x-code lang="bash">
+ps aux --sort=-%cpu | head                 # pemakai CPU terbesar
+ps -eo pid,ppid,user,rss,etime,cmd --sort=-rss | head   # memori (RSS dalam KiB)
+top        # lalu: 1 = per CPU, M = urut memori, P = urut cpu; %st = steal (credit t3!)
+htop       # interaktif; F5 tree view menampilkan pohon proses container
+free -h                                    # yang penting "available", bukan "free"
+vmstat 1 5                                 # r = run queue, si/so = swapping, wa = IO wait
+df -h                                      # pemakaian filesystem
+df -i                                      # inode: "disk penuh" padahal ruang masih ada
+du -xh --max-depth=1 /var/lib/docker | sort -h
+sudo lsblk -f                              # disk, filesystem, mount (/data)
+docker stats --no-stream
+kill -TERM <pid>; kill -KILL <pid>         # graceful, lalu paksa
+</x-code>
+
+<h3>Jaringan dan HTTP</h3>
+<x-code lang="bash">
+ss -tlnp                                   # socket TCP yang listen + prosesnya (netstat -tlnp di sistem lama)
+ss -tn state established '( dport = :5432 )' | wc -l    # jumlah koneksi DB yang terbuka
+curl -sv --max-time 3 http://10.20.11.20:8000/health/ready
+curl -o /dev/null -s -w 'dns=%{time_namelookup} connect=%{time_connect} tls=%{time_appconnect} ttfb=%{time_starttransfer} total=%{time_total}\n' https://api.example.com/health/live
+wget -qO- http://127.0.0.1/nginx-health
+dig +short api.example.com
+sudo tcpdump -ni ens5 port 5432 -c 20      # lihat apakah packet benar-benar sampai
+</x-code>
+
+<h3>Log, file, environment</h3>
+<x-code lang="bash">
+tail -f /var/log/syslog
+docker compose -f /opt/taskplatform/current/deploy/compose/app.yml logs -f --since 10m api-2
+docker logs api-2 2>&1 | grep '"level":"ERROR"' | tail
+grep -r "request_id\":\"5b3f" /var/lib/docker/containers/*/*-json.log
+cat /opt/taskplatform/shared/node.env; sudo nano /opt/taskplatform/shared/node.env   # atau vim
+env | sort; export LOG_LEVEL=DEBUG; printenv LOG_LEVEL
+docker exec api-2 env | grep -v -E 'PASSWORD|SECRET'   # apa yang dilihat container
+</x-code>
+
+<h3>Mendiagnosis kegagalan klasik</h3>
+<div class="table-wrap"><table>
+<thead><tr><th>Gejala</th><th>Perintah pertama</th><th>Penyebab umum</th></tr></thead>
+<tbody>
+<tr><td>Service tidak berjalan</td><td><code>systemctl status X</code>, <code>docker compose ps -a</code>, <code>journalctl -u X -n 50</code></td><td>Error konfigurasi saat start, dependency tidak ada, unit disabled</td></tr>
+<tr><td>Port tidak bisa dijangkau</td><td><code>ss -tlnp | grep PORT</code> di target; <code>nc -vz</code> dari sumber; SG; <code>ufw status</code></td><td>Bind ke 127.0.0.1, rule SG tidak ada, IP salah</td></tr>
+<tr><td>Container crash</td><td><code>docker ps -a</code> (jumlah restart), <code>docker logs --tail 100</code>, <code>docker inspect -f '{{.State.ExitCode}} {{.State.OOMKilled}}'</code></td><td>Exit 1 error aplikasi, 137 OOM/di-kill, 143 SIGTERM, env var hilang</td></tr>
+<tr><td>CPU tinggi</td><td><code>top</code> (<code>%st</code>!), <code>docker stats</code>, <code>py-spy top --pid</code></td><td>Credit t3 habis (steal), busy loop, pekerjaan CPU-bound di event loop</td></tr>
+<tr><td>Memori tinggi</td><td><code>free -h</code>, <code>ps --sort=-rss</code>, <code>journalctl -k | grep -i oom</code></td><td>Tanpa batas container, Redis tanpa maxmemory, memory leak</td></tr>
+<tr><td>Disk penuh</td><td><code>df -h</code>, <code>df -i</code>, <code>du -xh --max-depth=1 / | sort -h</code>, <code>docker system df</code></td><td>Log tanpa rotasi, image lama, TSDB Prometheus, WAL PostgreSQL</td></tr>
+<tr><td>Connection refused</td><td><code>ss -tlnp</code> di target</td><td>Tidak ada proses yang listen di sana — jalur jaringannya baik</td></tr>
+<tr><td>Timeout</td><td><code>nc -vz -w 3</code>, <code>tcpdump</code> di target, SG/NACL/route/ufw</td><td>Packet dibuang, atau proses menerima koneksi tapi hang (cek latency aplikasi)</td></tr>
+</tbody></table></div>
+</section>
+
+<section class="step" id="firewall" data-phase="Fondasi AWS" data-title="Firewall">
+<dl class="brief">
+  <div><dt>Tujuan</dt><dd>Menambahkan host firewall di belakang Security Group dan memahami persis apa yang dilindungi dan tidak.</dd></div>
+  <div><dt>Kenapa</dt><dd>Defense in depth: satu salah klik di rule SG tidak boleh mengekspos database.</dd></div>
+  <div><dt>Prasyarat</dt><dd>Langkah 22 (bootstrap menerapkannya).</dd></div>
+  <div><dt>Dampak ke arsitektur</dt><dd>Kontrol jaringan kedua yang independen di setiap host.</dd></div>
+</dl>
+
+<x-file path="deploy/firewall/ufw-rules.sh" lang="bash"></x-file>
+
+<div class="table-wrap"><table>
+<thead><tr><th></th><th>Security Group</th><th>Linux firewall (ufw/iptables/nftables)</th><th>Keamanan level aplikasi</th></tr></thead>
+<tbody>
+<tr><td>Di mana</td><td>Hypervisor AWS, per ENI</td><td>Kernel di dalam instance</td><td>Nginx / FastAPI / PostgreSQL</td></tr>
+<tr><td>Yang dilihat</td><td>IP, port, keanggotaan SG</td><td>IP, port, interface, state koneksi, rate</td><td>User, token, payload, aturan bisnis</td></tr>
+<tr><td>Stateful</td><td>Ya</td><td>Ya (conntrack)</td><td>—</td></tr>
+<tr><td>Rule deny</td><td>Tidak (allow saja)</td><td>Ya</td><td>Ya</td></tr>
+<tr><td>Jika host dibobol</td><td>Tetap ditegakkan</td><td>Root bisa mematikannya</td><td>Dilewati</td></tr>
+<tr><td>Contoh di sini</td><td>5432 hanya dari SG tier aplikasi</td><td>22 hanya dari IP edge; <code>limit</code> untuk SSH</td><td>JWT, 404 untuk ownership, rate limit, <code>pg_hba.conf</code>, password Redis</td></tr>
+</tbody></table></div>
+
+<x-note kind="danger" title="Docker melewati ufw">
+<p>Docker mem-publish port dengan menyisipkan rule DNAT di tabel <code>nat</code> dan rule ACCEPT di chain <code>DOCKER</code> miliknya, yang dievaluasi sebelum rule <code>INPUT</code> milik ufw. <code>ufw deny 5432</code> <strong>tidak</strong> memblokir <code>ports: "5432:5432"</code>. Mitigasi yang dipakai di sini: publish service internal hanya di private IP (<code>"${PRIVATE_IP}:5432:5432"</code>), dan Security Group tetap menjadi kontrol utama. Untuk memfilter port container di level host, tambahkan rule di chain <code>DOCKER-USER</code>, yang dievaluasi Docker lebih dulu:</p>
+<x-code lang="bash">
+sudo iptables -I DOCKER-USER -i ens5 -p tcp --dport 5432 ! -s 10.20.0.0/16 -j DROP
+</x-code>
+</x-note>
+
+<h3>Verifikasi</h3>
+<x-code lang="bash">
+ssh tp-data 'sudo ufw status numbered; sudo iptables -L DOCKER-USER -n; ss -tlnp | grep -E "5432|6379"'
+</x-code>
+<x-out>
+Status: active
+     To                         Action      From
+     --                         ------      ----
+[ 1] 22/tcp                     ALLOW IN    10.20.1.10       # SSH via bastion (edge) only
+[ 2] 9100/tcp                   ALLOW IN    10.20.11.40      # node-exporter from ops
+LISTEN 0 4096  10.20.11.50:5432  0.0.0.0:*  users:(("docker-proxy",pid=2211,fd=4))
+LISTEN 0 4096  10.20.11.50:6379  0.0.0.0:*  users:(("docker-proxy",pid=2240,fd=4))
+</x-out>
+<details class="errors"><summary>Error yang sering muncul</summary><div class="inner">
+<ul>
+<li>Terkunci di luar setelah <code>ufw enable</code> — masuk lewat SSM Session Manager atau EC2 Serial Console; selalu izinkan 22 sebelum enable.</li>
+<li>Prometheus tidak bisa scrape node-exporter padahal SG mengizinkan — rule ufw di host itu belum ada (service host-network <em>ikut</em> difilter ufw).</li>
+</ul>
+</div></details>
+</section>

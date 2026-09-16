@@ -1,0 +1,12 @@
+[Unit]
+Description=Twice-daily Let's Encrypt renewal check
+
+[Timer]
+OnCalendar=*-*-* 03,15:17:00
+# Spread load on Let's Encrypt; don't hit the hour boundary together with everyone else.
+RandomizedDelaySec=1h
+# Run at boot if the instance was stopped when the timer should have fired.
+Persistent=true
+
+[Install]
+WantedBy=timers.target
